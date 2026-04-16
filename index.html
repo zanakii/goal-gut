@@ -95,6 +95,11 @@
   /* Chart */
   .chart-wrap { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 14px; padding: 16px; margin-bottom: 20px; }
 
+  /* Bracket */
+  .bracket-match { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; margin-bottom: 4px; }
+  .bracket-select { width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 12px; font-weight: 600; font-family: inherit; outline: none; cursor: pointer; }
+  .bracket-select:disabled { opacity: 0.4; cursor: not-allowed; }
+
   /* Loading */
   .spinner { width: 40px; height: 40px; border: 3px solid rgba(52,211,153,0.2); border-top-color: #34d399; border-radius: 50%; animation: spin 0.8s linear infinite; }
 </style>
@@ -222,7 +227,8 @@ let state = {
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
   expanded: {}, dropdownOpen: false, loading: true, error: null,
   deadline: null, deadlinePassed: false,
-  showPinModal: false, pinValue: "", pinError: false, pinCallback: null
+  showPinModal: false, pinValue: "", pinError: false, pinCallback: null,
+  editBracket: {}, allBrackets: {}, bracketSubmitting: false
 };
 
 function setState(partial) { Object.assign(state, partial); render(); }
@@ -248,17 +254,20 @@ function cancelPin() {
 async function loadData() {
   setState({ loading: true, error: null });
   try {
-    const [players, matches, preds, podiums, config] = await Promise.all([
+    const [players, matches, preds, podiums, brackets, config] = await Promise.all([
       sbGet("players", "select=id,name,short_name&order=name"),
       sbGet("matches", "order=kickoff"),
       sbGet("predictions", "select=*"),
       sbGet("podium_predictions", "select=*"),
+      sbGet("bracket_predictions", "select=*"),
       sbGet("tournament_config", "key=eq.submission_deadline")
     ]);
     const predMap = {};
     preds.forEach(p => { if (!predMap[p.player_id]) predMap[p.player_id] = {}; predMap[p.player_id][p.match_id] = p; });
     const podMap = {};
     podiums.forEach(p => { podMap[p.player_id] = p; });
+    const bracketMap = {};
+    brackets.forEach(b => { if (!bracketMap[b.player_id]) bracketMap[b.player_id] = {}; bracketMap[b.player_id][`${b.round}-${b.slot}`] = b.picked_team; });
     const cp = state.currentPlayer || players[0] || null;
     const myPreds = predMap[cp?.id] || {};
     const myPodium = podMap[cp?.id];
@@ -274,8 +283,9 @@ async function loadData() {
     }
 
     setState({
-      players, matches, allPreds: predMap, allPodiums: podMap, currentPlayer: cp,
+      players, matches, allPreds: predMap, allPodiums: podMap, allBrackets: bracketMap, currentPlayer: cp,
       editPreds, editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
+      editBracket: bracketMap[cp?.id] || {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
       deadline, deadlinePassed
     });
@@ -290,12 +300,13 @@ function switchPlayer(p) {
   setState({
     currentPlayer: p, dropdownOpen: false, editPreds,
     editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
+    editBracket: state.allBrackets[p.id] || {},
     submitted: Object.keys(myPreds).length > 0
   });
 }
 
 async function submitPredictions() {
-  if (state.submitted || state.submitting) return;
+  if (state.submitting) return;
   if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
   requestPin(async (pin) => {
     setState({ submitting: true });
@@ -330,6 +341,98 @@ async function submitPredictions() {
       await loadData();
     } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
   });
+}
+
+// ─── BRACKET ─────────────────────────────────────────────────────────
+const BRACKET_ROUNDS = [
+  { id: "r32",   label: "Ronda de 32",      slots: 16 },
+  { id: "r16",   label: "Oitavos de Final",  slots: 8  },
+  { id: "qf",    label: "Quartos de Final",  slots: 4  },
+  { id: "sf",    label: "Meias-Final",       slots: 2  },
+  { id: "third", label: "3º Lugar",          slots: 1  },
+  { id: "final", label: "Final",             slots: 1  },
+];
+
+async function submitBracket() {
+  if (state.bracketSubmitting) return;
+  if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
+  const picks = Object.entries(state.editBracket).filter(([, t]) => t);
+  if (picks.length === 0) { alert("Seleciona pelo menos um vencedor antes de guardar."); return; }
+  requestPin(async (pin) => {
+    setState({ bracketSubmitting: true });
+    try {
+      const bracket = picks.map(([key, picked_team]) => {
+        const [round, slot] = key.split("-");
+        return { round, slot: parseInt(slot), picked_team };
+      });
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/submit-bracket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_KEY}` },
+        body: JSON.stringify({ player_id: state.currentPlayer.id, pin, bracket })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(res.status === 401 ? "Código incorrecto. Por favor tenta novamente." : "Erro: " + (data.error || res.status));
+        setState({ bracketSubmitting: false });
+        return;
+      }
+      await loadData();
+    } catch (e) { alert("Erro: " + e.message); setState({ bracketSubmitting: false }); }
+  });
+}
+
+function renderBracket() {
+  const allTeams = [...new Set(state.matches.flatMap(m => [m.team_a, m.team_b]))].sort();
+  const hasBracket = Object.keys(state.editBracket).some(k => state.editBracket[k]);
+
+  return h("div", { className: "content" },
+    h("h2", { style: { marginBottom: "4px" } }, "Fase Final"),
+    h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "20px" } },
+      "Seleciona o vencedor de cada jogo em cada ronda. As equipas qualificadas serão confirmadas após a fase de grupos (28 Jun)."
+    ),
+    ...BRACKET_ROUNDS.map(round =>
+      h("div", { style: { marginBottom: "24px" } },
+        h("div", { style: { fontSize: "11px", fontWeight: 700, color: "#34d399", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" } },
+          round.label
+        ),
+        ...Array.from({ length: round.slots }, (_, i) => {
+          const key = `${round.id}-${i}`;
+          const picked = state.editBracket[key] || "";
+          const locked = state.deadlinePassed;
+
+          const sel = document.createElement("select");
+          sel.className = "bracket-select";
+          sel.disabled = locked;
+          const def = document.createElement("option"); def.value = ""; def.textContent = "— Selecionar vencedor —"; def.style.background = "#1e293b";
+          sel.appendChild(def);
+          allTeams.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = t; o.style.background = "#1e293b"; sel.appendChild(o); });
+          sel.value = picked;
+          sel.addEventListener("change", () => {
+            if (!locked) { const eb = { ...state.editBracket }; eb[key] = sel.value; state.editBracket = eb; }
+          });
+
+          return h("div", { className: "bracket-match" },
+            h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", marginBottom: "6px" } }, `Jogo ${i + 1}`),
+            sel
+          );
+        })
+      )
+    ),
+    // Deadline info
+    state.deadlinePassed
+      ? h("div", { className: "deadline-banner" },
+          h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
+          h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão já passou.")
+        )
+      : state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
+          h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
+        ) : null,
+    // Save button
+    !state.deadlinePassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
+      h("button", { className: "submit-btn", onClick: submitBracket, disabled: state.bracketSubmitting, style: state.bracketSubmitting ? { opacity: 0.6, cursor: "wait" } : {} },
+        state.bracketSubmitting ? "A guardar..." : hasBracket ? "Actualizar Fase Final" : "Guardar Fase Final")
+    ) : null
+  );
 }
 
 // ─── RENDER ──────────────────────────────────────────────────────────
@@ -381,6 +484,7 @@ function renderNav() {
     { id: "matches", label: "Jogos", icon: "⚽" },
     { id: "leaderboard", label: "Classificação", icon: "📊" },
     { id: "predictions", label: "Prognósticos", icon: "✏️" },
+    { id: "bracket", label: "Fase Final", icon: "🏆" },
   ];
   return h("nav", { className: "nav" },
     ...tabs.map(t => h("button", { className: state.view === t.id ? "active" : "", onClick: () => setState({ view: t.id }) },
@@ -568,13 +672,13 @@ function renderPredictions() {
           ...[0,1,2].map(i => {
             const sel = document.createElement("select");
             sel.className = "podium-select";
-            sel.disabled = state.submitted || state.deadlinePassed;
-            sel.style.cssText = (state.submitted || state.deadlinePassed) ? "background:rgba(255,255,255,0.03);color:rgba(255,255,255,0.4);cursor:not-allowed;" : "";
+            sel.disabled = state.deadlinePassed;
+            sel.style.cssText = state.deadlinePassed ? "background:rgba(255,255,255,0.03);color:rgba(255,255,255,0.4);cursor:not-allowed;" : "";
             const def = document.createElement("option"); def.value = ""; def.disabled = true; def.textContent = "—"; def.style.background = "#1e293b";
             sel.appendChild(def);
             allTeams.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = t; o.style.background = "#1e293b"; sel.appendChild(o); });
             sel.value = state.editPodium[i] || "";
-            sel.addEventListener("change", () => { if (!state.submitted) { const ep = [...state.editPodium]; ep[i] = sel.value; setState({ editPodium: ep }); } });
+            sel.addEventListener("change", () => { const ep = [...state.editPodium]; ep[i] = sel.value; setState({ editPodium: ep }); });
             return h("div", { style: { flex: 1 } },
               h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.35)", marginBottom: "4px", textAlign: "center" } }, `${medals[i]} ${labels[i]}`),
               sel
@@ -596,7 +700,7 @@ function renderPredictions() {
           const pred = state.editPreds[m.id] || { score_a: 0, score_b: 0 };
           const pts = played ? calcPts(pred, m) : null;
           const ex = played && isExact(pred, m);
-          const locked = played || state.submitted || state.deadlinePassed;
+          const locked = played || state.deadlinePassed;
 
           const inpA = document.createElement("input");
           inpA.type = "number"; inpA.min = "0"; inpA.max = "20"; inpA.value = pred.score_a;
@@ -625,22 +729,19 @@ function renderPredictions() {
         })
       );
     }),
-    // Deadline banner
-    state.deadlinePassed && !state.submitted ? h("div", { className: "deadline-banner" },
-      h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
-      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão de prognósticos já passou.")
-    ) : null,
-    !state.deadlinePassed && !state.submitted && state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
-      h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
-    ) : null,
-    // Submit
-    !state.submitted && !state.deadlinePassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
+    // Deadline banner / countdown
+    state.deadlinePassed
+      ? h("div", { className: "deadline-banner" },
+          h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
+          h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão de prognósticos já passou.")
+        )
+      : state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
+          h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
+        ) : null,
+    // Submit / update button
+    !state.deadlinePassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
       h("button", { className: "submit-btn", onClick: submitPredictions, disabled: state.submitting, style: state.submitting ? { opacity: 0.6, cursor: "wait" } : {} },
-        state.submitting ? "A submeter..." : "Submeter Prognósticos")
-    ) : state.submitted ? h("div", { style: { textAlign: "center", padding: "20px", background: "rgba(52,211,153,0.06)", borderRadius: "14px", border: "1px solid rgba(52,211,153,0.15)", marginTop: "8px" } },
-      h("div", { style: { fontSize: "24px", marginBottom: "6px" } }, "✅"),
-      h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#34d399" } }, "Prognósticos submetidos!"),
-      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "Os teus prognósticos estão bloqueados e não podem ser alterados.")
+        state.submitting ? "A submeter..." : state.submitted ? "Actualizar Prognósticos" : "Submeter Prognósticos")
     ) : null
   );
 }
@@ -696,6 +797,7 @@ function render() {
   else if (state.view === "matchDetail") app.appendChild(renderMatchDetail());
   else if (state.view === "leaderboard") app.appendChild(renderLeaderboard());
   else if (state.view === "predictions") app.appendChild(renderPredictions());
+  else if (state.view === "bracket") app.appendChild(renderBracket());
 
   app.appendChild(renderNav());
 

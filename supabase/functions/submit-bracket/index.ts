@@ -11,9 +11,9 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { player_id, pin, predictions, podium } = await req.json()
+    const { player_id, pin, bracket } = await req.json()
 
-    if (!player_id || !pin || !predictions?.length) {
+    if (!player_id || !pin || !bracket?.length) {
       return new Response(JSON.stringify({ error: 'Missing required fields' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
@@ -56,20 +56,20 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Upsert predictions (service role bypasses RLS)
-    const { error: predError } = await supabase
-      .from('predictions')
-      .upsert(predictions, { onConflict: 'player_id,match_id' })
+    // Upsert bracket picks
+    const rows = bracket.map((b: { round: string; slot: number; picked_team: string }) => ({
+      player_id,
+      round: b.round,
+      slot: b.slot,
+      picked_team: b.picked_team,
+      updated_at: new Date().toISOString()
+    }))
 
-    if (predError) throw new Error(predError.message)
+    const { error: bracketError } = await supabase
+      .from('bracket_predictions')
+      .upsert(rows, { onConflict: 'player_id,round,slot' })
 
-    // Upsert podium if all three places are filled
-    if (podium?.first_place && podium?.second_place && podium?.third_place) {
-      const { error: podiumError } = await supabase
-        .from('podium_predictions')
-        .upsert({ player_id, ...podium }, { onConflict: 'player_id' })
-      if (podiumError) throw new Error(podiumError.message)
-    }
+    if (bracketError) throw new Error(bracketError.message)
 
     return new Response(JSON.stringify({ success: true }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
