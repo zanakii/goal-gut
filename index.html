@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Prognósticos WC 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f172a; color: #fff; font-family: 'DM Sans', -apple-system, sans-serif; max-width: 480px; margin: 0 auto; min-height: 100vh; padding-bottom: 80px; }
@@ -91,6 +92,9 @@
   /* Deadline banner */
   .deadline-banner { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; text-align: center; }
 
+  /* Chart */
+  .chart-wrap { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 14px; padding: 16px; margin-bottom: 20px; }
+
   /* Loading */
   .spinner { width: 40px; height: 40px; border: 3px solid rgba(52,211,153,0.2); border-top-color: #34d399; border-radius: 50%; animation: spin 0.8s linear infinite; }
 </style>
@@ -144,6 +148,72 @@ function badgeColor(pts) {
 function fmtShort(iso) { const d = new Date(iso); return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1).toString().padStart(2,"0")}`; }
 function fmtTime(iso) { const d = new Date(iso); return `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`; }
 function fmtDate(iso) { const wd = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"]; const d = new Date(iso); return `${wd[d.getDay()]} ${fmtShort(iso)} ${fmtTime(iso)}`; }
+
+// ─── CHART ───────────────────────────────────────────────────────────
+let chartInstance = null;
+
+const PLAYER_COLORS = ["#34d399","#06b6d4","#f59e0b","#f472b6","#a78bfa","#fb923c","#60a5fa","#e2e8f0"];
+
+function initChart() {
+  const canvas = document.getElementById("points-chart");
+  if (!canvas) return;
+  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+
+  const played = state.matches
+    .filter(m => m.score_a !== null)
+    .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+
+  const dates = [...new Set(played.map(m => m.kickoff.split("T")[0]))].sort();
+
+  const datasets = state.players.map((p, i) => {
+    let cumulative = 0;
+    const data = dates.map(date => {
+      played.filter(m => m.kickoff.startsWith(date)).forEach(m => {
+        const pts = calcPts(state.allPreds[p.id]?.[m.id], m);
+        if (pts !== null) cumulative += pts;
+      });
+      return cumulative;
+    });
+    return {
+      label: p.short_name || p.name.split(" ")[0],
+      data,
+      borderColor: PLAYER_COLORS[i % PLAYER_COLORS.length],
+      backgroundColor: "transparent",
+      borderWidth: 2,
+      pointRadius: 3,
+      tension: 0.3
+    };
+  });
+
+  chartInstance = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels: dates.map(d => { const [,m,day] = d.split("-"); return `${day}/${m}`; }),
+      datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: "rgba(255,255,255,0.6)", font: { size: 11, family: "'DM Sans', sans-serif" }, boxWidth: 12, padding: 10 }
+        },
+        tooltip: { mode: "index", intersect: false }
+      },
+      scales: {
+        x: {
+          ticks: { color: "rgba(255,255,255,0.4)", font: { size: 10 } },
+          grid: { color: "rgba(255,255,255,0.04)" }
+        },
+        y: {
+          ticks: { color: "rgba(255,255,255,0.4)", font: { size: 10 } },
+          grid: { color: "rgba(255,255,255,0.04)" },
+          title: { display: true, text: "Pontos", color: "rgba(255,255,255,0.3)", font: { size: 10 } }
+        }
+      }
+    }
+  });
+}
 
 // ─── STATE ───────────────────────────────────────────────────────────
 let state = {
@@ -420,6 +490,15 @@ function renderLeaderboard() {
       h("div", { className: "progress-track" }, h("div", { className: "progress-fill", style: { width: progress + "%" } }))
     ),
     h("h2", null, "Classificação"),
+    // Chart
+    h("div", { className: "chart-wrap" },
+      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" } }, "Pontos Acumulados"),
+      played.length < 2
+        ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: "12px", padding: "20px 0" } }, "Disponível após os primeiros jogos")
+        : h("div", { style: { height: "200px", position: "relative" } },
+            h("canvas", { id: "points-chart" })
+          )
+    ),
     played.length === 0 ? h("div", { style: { textAlign: "center", padding: "40px 20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.") :
     h("div", null, ...lb.map((p, i) => {
       const isTop = i < 3;
@@ -611,6 +690,11 @@ function render() {
   // PIN modal overlay
   const pinModal = renderPinModal();
   if (pinModal) app.appendChild(pinModal);
+
+  // Init chart on leaderboard view
+  if (state.view === "leaderboard") {
+    setTimeout(() => initChart(), 0);
+  }
 
   // Auto-scroll to today on predictions view
   if (state.view === "predictions") {
