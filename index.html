@@ -233,15 +233,11 @@ function requestPin(callback) {
 }
 
 function verifyPin() {
-  const cp = state.currentPlayer;
-  if (!cp) return;
-  if (state.pinValue === cp.code) {
-    const cb = state.pinCallback;
-    setState({ showPinModal: false, pinValue: "", pinError: false, pinCallback: null });
-    if (cb) cb();
-  } else {
-    setState({ pinError: true });
-  }
+  if (!state.pinValue) return;
+  const pin = state.pinValue;
+  const cb = state.pinCallback;
+  setState({ showPinModal: false, pinValue: "", pinError: false, pinCallback: null });
+  if (cb) cb(pin);
 }
 
 function cancelPin() {
@@ -253,7 +249,7 @@ async function loadData() {
   setState({ loading: true, error: null });
   try {
     const [players, matches, preds, podiums, config] = await Promise.all([
-      sbGet("players", "select=id,name,code,short_name&order=name"),
+      sbGet("players", "select=id,name,short_name&order=name"),
       sbGet("matches", "order=kickoff"),
       sbGet("predictions", "select=*"),
       sbGet("podium_predictions", "select=*"),
@@ -301,20 +297,36 @@ function switchPlayer(p) {
 async function submitPredictions() {
   if (state.submitted || state.submitting) return;
   if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
-  // Ask for PIN first
-  requestPin(async () => {
+  requestPin(async (pin) => {
     setState({ submitting: true });
     try {
-      const rows = Object.entries(state.editPreds).map(([mid, p]) => ({
+      const predictions = Object.entries(state.editPreds).map(([mid, p]) => ({
         player_id: state.currentPlayer.id, match_id: parseInt(mid), score_a: p.score_a, score_b: p.score_b
       }));
-      await sbPost("predictions", rows);
-      if (state.editPodium[0] && state.editPodium[1] && state.editPodium[2]) {
-        await sbPost("podium_predictions", {
-          player_id: state.currentPlayer.id,
-          first_place: state.editPodium[0], second_place: state.editPodium[1], third_place: state.editPodium[2]
-        });
+      const podium = (state.editPodium[0] && state.editPodium[1] && state.editPodium[2])
+        ? { first_place: state.editPodium[0], second_place: state.editPodium[1], third_place: state.editPodium[2] }
+        : null;
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/submit-predictions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${SUPABASE_KEY}`
+        },
+        body: JSON.stringify({ player_id: state.currentPlayer.id, pin, predictions, podium })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (res.status === 401) {
+          alert("Código incorrecto. Por favor tenta novamente.");
+        } else {
+          alert("Erro: " + (data.error || res.status));
+        }
+        setState({ submitting: false });
+        return;
       }
+
       await loadData();
     } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
   });
