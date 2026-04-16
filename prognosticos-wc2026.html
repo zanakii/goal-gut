@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Prognósticos WC 2026</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #fff; font-family: 'DM Sans', -apple-system, sans-serif; max-width: 480px; margin: 0 auto; min-height: 100vh; padding-bottom: 80px; }
+  input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  ::-webkit-scrollbar { width: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Nav */
+  .nav { position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; background: rgba(15,23,42,0.95); backdrop-filter: blur(20px); border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-around; padding: 6px 0 env(safe-area-inset-bottom, 8px); }
+  .nav button { background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; color: rgba(255,255,255,0.4); font-size: 10px; font-weight: 600; padding: 4px 16px; transition: color 0.2s; font-family: inherit; }
+  .nav button.active { color: #34d399; }
+
+  /* Header */
+  .header { background: linear-gradient(135deg, #064e3b 0%, #0f172a 100%); padding: 16px 20px 14px; position: sticky; top: 0; z-index: 90; border-bottom: 1px solid rgba(52,211,153,0.15); display: flex; align-items: center; justify-content: space-between; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-circle { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #34d399, #06b6d4); display: flex; align-items: center; justify-content: center; }
+  .player-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 6px 14px; color: #34d399; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; position: relative; }
+  .player-dropdown { position: absolute; right: 0; top: 110%; background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); overflow: hidden; min-width: 180px; z-index: 999; animation: fadeIn 0.15s ease; }
+  .player-dropdown button { display: block; width: 100%; padding: 10px 16px; border: none; background: transparent; color: #94a3b8; font-size: 13px; font-weight: 500; cursor: pointer; text-align: left; font-family: inherit; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .player-dropdown button.sel { background: rgba(52,211,153,0.15); color: #34d399; }
+
+  /* Badge */
+  .badge { font-weight: 700; font-variant-numeric: tabular-nums; display: inline-block; min-width: 24px; text-align: center; color: #fff; }
+  .badge-sm { font-size: 11px; padding: 1px 6px; border-radius: 6px; }
+  .badge-md { font-size: 13px; padding: 2px 8px; border-radius: 8px; }
+
+  /* Content */
+  .content { padding: 16px; }
+  h2 { font-size: 18px; font-weight: 800; margin-bottom: 14px; }
+  .group-label { font-size: 12px; font-weight: 700; color: #34d399; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; padding: 0 4px; }
+
+  /* Match card */
+  .match-card { display: flex; align-items: center; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); font-family: inherit; width: 100%; text-align: left; cursor: pointer; margin-bottom: 4px; }
+  .match-card.upcoming { opacity: 0.5; cursor: default; }
+  .match-card.exact { background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.2); }
+
+  /* Filter buttons */
+  .filters { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+  .filter-btn { padding: 6px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); background: transparent; color: rgba(255,255,255,0.5); font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .filter-btn.active { border-color: #34d399; background: rgba(52,211,153,0.15); color: #34d399; }
+  .group-filters { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+  .group-btn { padding: 4px 10px; border-radius: 8px; border: none; background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); font-size: 11px; font-weight: 700; cursor: pointer; font-family: inherit; }
+  .group-btn.active { background: #34d399; color: #0f172a; }
+
+  /* Score display */
+  .score-box { font-size: 14px; font-weight: 900; color: #fff; background: rgba(52,211,153,0.12); padding: 2px 8px; border-radius: 6px; font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
+
+  /* Prediction input */
+  .pred-input { width: 38px; height: 32px; text-align: center; font-size: 15px; font-weight: 800; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(52,211,153,0.3); border-radius: 8px; font-family: inherit; outline: none; }
+  .pred-input:disabled { background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35); border-color: rgba(255,255,255,0.06); cursor: not-allowed; }
+
+  /* Submit button */
+  .submit-btn { width: 100%; padding: 14px; border-radius: 12px; border: none; background: linear-gradient(135deg, #34d399, #06b6d4); color: #0f172a; font-size: 14px; font-weight: 800; cursor: pointer; font-family: inherit; box-shadow: 0 8px 24px rgba(52,211,153,0.3); }
+
+  /* Podium */
+  .podium-bar { position: sticky; top: 68px; z-index: 50; background: linear-gradient(180deg, #0f172a 0%, #0f172a 92%, transparent 100%); padding-bottom: 12px; margin-bottom: 4px; }
+  .podium-card { background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(180,83,9,0.04)); border: 1px solid rgba(251,191,36,0.12); border-radius: 14px; padding: 14px; }
+  .podium-select { width: 100%; padding: 7px 4px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 11px; font-weight: 600; font-family: inherit; outline: none; appearance: none; text-align: center; cursor: pointer; }
+
+  /* Progress bar */
+  .progress-card { background: linear-gradient(135deg, rgba(52,211,153,0.1), rgba(6,182,212,0.05)); border: 1px solid rgba(52,211,153,0.15); border-radius: 16px; padding: 16px; margin-bottom: 20px; }
+  .progress-track { height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #34d399, #06b6d4); border-radius: 3px; transition: width 0.5s ease; }
+
+  /* Leaderboard row */
+  .lb-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer; font-family: inherit; text-align: left; background: rgba(255,255,255,0.02); margin-bottom: 6px; }
+  .lb-row.top { background: rgba(52,211,153,0.06); border-color: rgba(52,211,153,0.12); }
+  .lb-row.expanded-top { border-radius: 12px 12px 0 0; border-bottom: none; }
+  .lb-expand { padding: 10px 14px 12px; border-radius: 0 0 12px 12px; border: 1px solid rgba(255,255,255,0.05); border-top: none; animation: fadeIn 0.15s ease; }
+  .lb-expand.top { background: rgba(52,211,153,0.03); border-color: rgba(52,211,153,0.12); }
+
+  /* PIN modal */
+  .pin-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+  .pin-modal { background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 28px 24px; width: 300px; text-align: center; animation: fadeIn 0.2s ease; }
+  .pin-input { width: 140px; height: 48px; text-align: center; font-size: 24px; font-weight: 800; letter-spacing: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 2px solid rgba(52,211,153,0.3); border-radius: 12px; font-family: inherit; outline: none; margin: 16px 0; }
+  .pin-input:focus { border-color: #34d399; }
+  .pin-input.error { border-color: #ef4444; animation: shake 0.3s ease; }
+  .pin-btn { padding: 10px 24px; border-radius: 10px; border: none; background: #34d399; color: #0f172a; font-weight: 700; font-size: 14px; cursor: pointer; font-family: inherit; width: 100%; }
+  .pin-cancel { padding: 8px 24px; border-radius: 10px; border: none; background: transparent; color: rgba(255,255,255,0.4); font-weight: 600; font-size: 13px; cursor: pointer; font-family: inherit; margin-top: 8px; }
+  @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+
+  /* Deadline banner */
+  .deadline-banner { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; text-align: center; }
+
+  /* Loading */
+  .spinner { width: 40px; height: 40px; border: 3px solid rgba(52,211,153,0.2); border-top-color: #34d399; border-radius: 50%; animation: spin 0.8s linear infinite; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+// ─── CONFIG ──────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://thjvoocszfzqkyatkevv.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoanZvb2NzemZ6cWt5YXRrZXZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MjUxNjgsImV4cCI6MjA5MTMwMTE2OH0.ZcddMnsMF9cejXx3zuWNVqd4F8bMxgdIRHLSJsC7aUs";
+
+async function sbGet(table, params = "") {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+  });
+  if (!r.ok) throw new Error(`GET ${table}: ${r.status}`);
+  return r.json();
+}
+async function sbPost(table, data) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(data)
+  });
+  if (!r.ok) { const e = await r.text(); throw new Error(`POST ${table}: ${r.status} ${e}`); }
+}
+
+// ─── SCORING ─────────────────────────────────────────────────────────
+function calcPts(pred, m) {
+  if (!pred || m.score_a === null || m.score_b === null) return null;
+  const pO = pred.score_a > pred.score_b ? "A" : pred.score_a < pred.score_b ? "B" : "D";
+  const rO = m.score_a > m.score_b ? "A" : m.score_a < m.score_b ? "B" : "D";
+  let p = 0;
+  if (pO !== rO) p += (pO === "D" || rO === "D") ? 2 : 3;
+  p += Math.abs(m.score_a - pred.score_a) + Math.abs(m.score_b - pred.score_b);
+  return p;
+}
+function isExact(pred, m) {
+  return pred && m.score_a !== null && pred.score_a === m.score_a && pred.score_b === m.score_b;
+}
+function badgeColor(pts) {
+  if (pts === 0) return "#10b981";
+  if (pts <= 2) return "#34d399";
+  if (pts <= 4) return "#fbbf24";
+  if (pts <= 6) return "#fb923c";
+  return "#ef4444";
+}
+
+// ─── FORMATTING ──────────────────────────────────────────────────────
+function fmtShort(iso) { const d = new Date(iso); return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1).toString().padStart(2,"0")}`; }
+function fmtTime(iso) { const d = new Date(iso); return `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`; }
+function fmtDate(iso) { const wd = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"]; const d = new Date(iso); return `${wd[d.getDay()]} ${fmtShort(iso)} ${fmtTime(iso)}`; }
+
+// ─── STATE ───────────────────────────────────────────────────────────
+let state = {
+  view: "matches", players: [], matches: [], allPreds: {}, allPodiums: {},
+  currentPlayer: null, selectedMatch: null, groupFilter: "all", statusFilter: "all",
+  editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
+  expanded: {}, dropdownOpen: false, loading: true, error: null,
+  deadline: null, deadlinePassed: false,
+  showPinModal: false, pinValue: "", pinError: false, pinCallback: null
+};
+
+function setState(partial) { Object.assign(state, partial); render(); }
+
+// ─── PIN VERIFICATION ────────────────────────────────────────────────
+function requestPin(callback) {
+  setState({ showPinModal: true, pinValue: "", pinError: false, pinCallback: callback });
+}
+
+function verifyPin() {
+  const cp = state.currentPlayer;
+  if (!cp) return;
+  if (state.pinValue === cp.code) {
+    const cb = state.pinCallback;
+    setState({ showPinModal: false, pinValue: "", pinError: false, pinCallback: null });
+    if (cb) cb();
+  } else {
+    setState({ pinError: true });
+  }
+}
+
+function cancelPin() {
+  setState({ showPinModal: false, pinValue: "", pinError: false, pinCallback: null });
+}
+
+// ─── DATA LOADING ────────────────────────────────────────────────────
+async function loadData() {
+  setState({ loading: true, error: null });
+  try {
+    const [players, matches, preds, podiums, config] = await Promise.all([
+      sbGet("players", "select=id,name,code,short_name&order=name"),
+      sbGet("matches", "order=kickoff"),
+      sbGet("predictions", "select=*"),
+      sbGet("podium_predictions", "select=*"),
+      sbGet("tournament_config", "key=eq.submission_deadline")
+    ]);
+    const predMap = {};
+    preds.forEach(p => { if (!predMap[p.player_id]) predMap[p.player_id] = {}; predMap[p.player_id][p.match_id] = p; });
+    const podMap = {};
+    podiums.forEach(p => { podMap[p.player_id] = p; });
+    const cp = state.currentPlayer || players[0] || null;
+    const myPreds = predMap[cp?.id] || {};
+    const myPodium = podMap[cp?.id];
+    const editPreds = {};
+    matches.forEach(m => { editPreds[m.id] = myPreds[m.id] ? { score_a: myPreds[m.id].score_a, score_b: myPreds[m.id].score_b } : { score_a: 0, score_b: 0 }; });
+    
+    // Parse deadline
+    let deadline = null;
+    let deadlinePassed = false;
+    if (config.length > 0) {
+      deadline = new Date(JSON.parse(JSON.stringify(config[0].value)));
+      deadlinePassed = new Date() > deadline;
+    }
+
+    setState({
+      players, matches, allPreds: predMap, allPodiums: podMap, currentPlayer: cp,
+      editPreds, editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
+      submitted: Object.keys(myPreds).length > 0, loading: false,
+      deadline, deadlinePassed
+    });
+  } catch (e) { setState({ error: e.message, loading: false }); }
+}
+
+function switchPlayer(p) {
+  const myPreds = state.allPreds[p.id] || {};
+  const myPodium = state.allPodiums[p.id];
+  const editPreds = {};
+  state.matches.forEach(m => { editPreds[m.id] = myPreds[m.id] ? { score_a: myPreds[m.id].score_a, score_b: myPreds[m.id].score_b } : { score_a: 0, score_b: 0 }; });
+  setState({
+    currentPlayer: p, dropdownOpen: false, editPreds,
+    editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
+    submitted: Object.keys(myPreds).length > 0
+  });
+}
+
+async function submitPredictions() {
+  if (state.submitted || state.submitting) return;
+  if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
+  // Ask for PIN first
+  requestPin(async () => {
+    setState({ submitting: true });
+    try {
+      const rows = Object.entries(state.editPreds).map(([mid, p]) => ({
+        player_id: state.currentPlayer.id, match_id: parseInt(mid), score_a: p.score_a, score_b: p.score_b
+      }));
+      await sbPost("predictions", rows);
+      if (state.editPodium[0] && state.editPodium[1] && state.editPodium[2]) {
+        await sbPost("podium_predictions", {
+          player_id: state.currentPlayer.id,
+          first_place: state.editPodium[0], second_place: state.editPodium[1], third_place: state.editPodium[2]
+        });
+      }
+      await loadData();
+    } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
+  });
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────
+function h(tag, attrs, ...children) {
+  const el = document.createElement(tag);
+  if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+    if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (k === "className") el.className = v;
+    else if (k === "disabled") { if (v) el.setAttribute("disabled",""); }
+    else if (k === "value") el.value = v;
+    else el.setAttribute(k, v);
+  });
+  children.flat(Infinity).forEach(c => {
+    if (c == null || c === false) return;
+    el.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(c) : c);
+  });
+  return el;
+}
+
+function badge(pts, sm) {
+  if (pts === null || pts === undefined) return document.createTextNode("");
+  return h("span", { className: `badge ${sm ? "badge-sm" : "badge-md"}`, style: { background: badgeColor(pts) } }, String(pts));
+}
+
+function renderHeader() {
+  const cp = state.currentPlayer;
+  return h("div", { className: "header" },
+    h("div", { className: "logo" },
+      h("div", { className: "logo-circle" }, h("span", { style: { fontSize: "16px" } }, "🏆")),
+      h("div", null,
+        h("div", { style: { fontSize: "15px", fontWeight: 800, color: "#fff" } }, "Prognósticos"),
+        h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.5)" } }, "FIFA World Cup 2026™")
+      )
+    ),
+    h("div", { style: { position: "relative" } },
+      h("button", { className: "player-btn", onClick: () => setState({ dropdownOpen: !state.dropdownOpen }) },
+        (cp?.name?.split(" ")[0] || "Jogador") + " ▾"
+      ),
+      state.dropdownOpen ? h("div", { className: "player-dropdown" },
+        ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, p.name))
+      ) : null
+    )
+  );
+}
+
+function renderNav() {
+  const tabs = [
+    { id: "matches", label: "Jogos", icon: "⚽" },
+    { id: "leaderboard", label: "Classificação", icon: "📊" },
+    { id: "predictions", label: "Prognósticos", icon: "✏️" },
+  ];
+  return h("nav", { className: "nav" },
+    ...tabs.map(t => h("button", { className: state.view === t.id ? "active" : "", onClick: () => setState({ view: t.id }) },
+      h("span", { style: { fontSize: "16px" } }, t.icon), t.label
+    ))
+  );
+}
+
+function renderMatches() {
+  const groups = [...new Set(state.matches.map(m => m.group_letter))].sort();
+  const myPreds = state.allPreds[state.currentPlayer?.id] || {};
+  let filtered = state.matches.filter(m => {
+    if (state.groupFilter !== "all" && m.group_letter !== state.groupFilter) return false;
+    if (state.statusFilter === "played" && m.score_a === null) return false;
+    if (state.statusFilter === "upcoming" && m.score_a !== null) return false;
+    return true;
+  });
+  const grouped = {};
+  filtered.forEach(m => { if (!grouped[m.group_letter]) grouped[m.group_letter] = []; grouped[m.group_letter].push(m); });
+
+  return h("div", { className: "content" },
+    h("h2", null, "Jogos"),
+    h("div", { className: "filters" },
+      ...["all","played","upcoming"].map(s => h("button", { className: `filter-btn ${state.statusFilter === s ? "active" : ""}`, onClick: () => setState({ statusFilter: s }) },
+        s === "all" ? "Todos" : s === "played" ? "Jogados" : "Por jogar"))
+    ),
+    h("div", { className: "group-filters" },
+      h("button", { className: `group-btn ${state.groupFilter === "all" ? "active" : ""}`, onClick: () => setState({ groupFilter: "all" }) }, "Todos"),
+      ...groups.map(g => h("button", { className: `group-btn ${state.groupFilter === g ? "active" : ""}`, onClick: () => setState({ groupFilter: g }) }, g))
+    ),
+    ...Object.entries(grouped).map(([grp, ms]) => h("div", { style: { marginBottom: "20px" } },
+      h("div", { className: "group-label" }, "Grupo " + grp),
+      ...ms.map(m => {
+        const played = m.score_a !== null;
+        const pred = myPreds[m.id];
+        const pts = played && pred ? calcPts(pred, m) : null;
+        const ex = played && pred && isExact(pred, m);
+        return h("div", { className: `match-card ${!played ? "upcoming" : ""} ${ex ? "exact" : ""}`,
+          onClick: () => { if (played) setState({ selectedMatch: m.id, view: "matchDetail" }); } },
+          h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", width: "48px", lineHeight: "1.3" } },
+            h("div", null, fmtShort(m.kickoff)), h("div", null, fmtTime(m.kickoff))
+          ),
+          h("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: "2px" } },
+            h("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" } },
+              h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "right", flex: 1 } }, m.team_a),
+              played ? h("span", { className: "score-box" }, `${m.score_a} - ${m.score_b}`) :
+                h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.2)", minWidth: "44px", textAlign: "center" } }, "vs"),
+              h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "left", flex: 1 } }, m.team_b)
+            ),
+            pred ? h("div", { style: { display: "flex", justifyContent: "center" } },
+              h("span", { style: { fontSize: "10px", fontWeight: 600, color: ex ? "#10b981" : "rgba(255,255,255,0.25)" } },
+                (ex ? "✓ " : "Eu: ") + pred.score_a + " - " + pred.score_b)
+            ) : null
+          ),
+          h("div", { style: { display: "flex", alignItems: "center", gap: "6px", minWidth: "46px", justifyContent: "flex-end" } },
+            badge(pts, true),
+            played ? h("span", { style: { fontSize: "11px", color: "rgba(255,255,255,0.15)" } }, "›") : null
+          )
+        );
+      })
+    )),
+    filtered.length === 0 ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", padding: "40px 0", fontSize: "13px" } }, "Nenhum jogo encontrado") : null
+  );
+}
+
+function renderMatchDetail() {
+  const m = state.matches.find(x => x.id === state.selectedMatch);
+  if (!m) return h("div", null);
+  const playerData = state.players.map(p => {
+    const pred = state.allPreds[p.id]?.[m.id];
+    return { ...p, pred, pts: calcPts(pred, m), exact: isExact(pred, m) };
+  }).sort((a, b) => (a.pts ?? 999) - (b.pts ?? 999));
+
+  return h("div", { className: "content" },
+    h("button", { onClick: () => setState({ view: "matches" }), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Voltar aos jogos"),
+    h("div", { style: { background: "linear-gradient(135deg, rgba(52,211,153,0.08), rgba(6,182,212,0.04))", border: "1px solid rgba(52,211,153,0.12)", borderRadius: "16px", padding: "20px", textAlign: "center", marginBottom: "20px" } },
+      h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.4)", marginBottom: "4px" } }, `Grupo ${m.group_letter} · Jogo ${m.id}`),
+      h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.3)", marginBottom: "12px" } }, `${fmtDate(m.kickoff)} · ${m.venue}`),
+      h("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "16px" } },
+        h("div", { style: { flex: 1, textAlign: "right", fontSize: "16px", fontWeight: 800 } }, m.team_a),
+        m.score_a !== null ? h("div", { style: { fontSize: "28px", fontWeight: 900, background: "rgba(52,211,153,0.2)", padding: "4px 18px", borderRadius: "12px", fontVariantNumeric: "tabular-nums" } }, `${m.score_a} - ${m.score_b}`) : null,
+        h("div", { style: { flex: 1, textAlign: "left", fontSize: "16px", fontWeight: 800 } }, m.team_b)
+      )
+    ),
+    h("h3", { style: { fontSize: "15px", fontWeight: 700, marginBottom: "10px" } }, "Prognósticos"),
+    ...playerData.map((p, i) => h("div", { style: { display: "flex", alignItems: "center", padding: "10px 12px", borderRadius: "10px", background: p.exact ? "rgba(16,185,129,0.08)" : "rgba(255,255,255,0.03)", border: `1px solid ${p.exact ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.05)"}`, gap: "10px", marginBottom: "4px" } },
+      h("div", { style: { width: "20px", fontSize: "12px", fontWeight: 700, color: "rgba(255,255,255,0.25)", textAlign: "center" } }, String(i + 1)),
+      h("div", { style: { flex: 1 } },
+        h("div", { style: { fontSize: "13px", fontWeight: 600, color: p.exact ? "#10b981" : "rgba(255,255,255,0.8)" } }, p.name),
+        p.exact ? h("div", { style: { fontSize: "10px", color: "#10b981", fontWeight: 600 } }, "Resultado exacto!") : null
+      ),
+      p.pred ? h("div", { style: { fontSize: "14px", fontWeight: 800, color: "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", minWidth: "44px", textAlign: "center" } }, `${p.pred.score_a} - ${p.pred.score_b}`) :
+        h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.2)" } }, "—"),
+      badge(p.pts, false)
+    ))
+  );
+}
+
+function renderLeaderboard() {
+  const played = state.matches.filter(m => m.score_a !== null);
+  const progress = state.matches.length > 0 ? (played.length / state.matches.length) * 100 : 0;
+  const lb = state.players.map(p => {
+    let total = 0, scored = 0, exacts = 0;
+    played.forEach(m => {
+      const pred = state.allPreds[p.id]?.[m.id];
+      const pts = calcPts(pred, m);
+      if (pts !== null) { total += pts; scored++; if (isExact(pred, m)) exacts++; }
+    });
+    return { ...p, total, scored, exacts };
+  }).sort((a, b) => a.total - b.total);
+  const medals = ["🥇","🥈","🥉"];
+
+  return h("div", { className: "content" },
+    h("div", { className: "progress-card" },
+      h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "8px" } },
+        h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.5)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" } }, "Progresso do Torneio"),
+        h("span", { style: { fontSize: "13px", color: "#34d399", fontWeight: 700 } }, `${played.length}/${state.matches.length} jogos`)
+      ),
+      h("div", { className: "progress-track" }, h("div", { className: "progress-fill", style: { width: progress + "%" } }))
+    ),
+    h("h2", null, "Classificação"),
+    played.length === 0 ? h("div", { style: { textAlign: "center", padding: "40px 20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.") :
+    h("div", null, ...lb.map((p, i) => {
+      const isTop = i < 3;
+      const isExp = state.expanded[p.id];
+      const exactMatches = isExp ? played.filter(m => isExact(state.allPreds[p.id]?.[m.id], m)) : [];
+      return h("div", null,
+        h("button", { className: `lb-row ${isTop ? "top" : ""} ${isExp ? "expanded-top" : ""}`, onClick: () => { const e = { ...state.expanded }; e[p.id] = !e[p.id]; setState({ expanded: e }); } },
+          h("div", { style: { width: "28px", fontSize: medals[i] ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)", textAlign: "center" } }, medals[i] || String(i + 1)),
+          h("div", { style: { flex: 1 } },
+            h("div", { style: { fontSize: "14px", fontWeight: 700, color: isTop ? "#fff" : "rgba(255,255,255,0.8)" } }, p.name),
+            h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.35)", marginTop: "1px" } },
+              `${p.scored} jogos · `, h("span", { style: { color: p.exacts > 0 ? "#10b981" : "rgba(255,255,255,0.25)" } }, `${p.exacts} exacto${p.exacts !== 1 ? "s" : ""} ${p.exacts > 0 ? "✓" : ""}`))
+          ),
+          h("div", { style: { fontSize: "22px", fontWeight: 900, color: isTop ? "#34d399" : "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", letterSpacing: "-1px" } }, String(p.total)),
+          h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.2)" } }, isExp ? "▴" : "▾")
+        ),
+        isExp ? h("div", { className: `lb-expand ${isTop ? "top" : ""}` },
+          exactMatches.length === 0 ? h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.3)", fontStyle: "italic" } }, "Nenhum resultado exacto ainda") :
+          h("div", null,
+            h("div", { style: { fontSize: "11px", fontWeight: 700, color: "#10b981", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Resultados exactos"),
+            ...exactMatches.map(m => h("div", { style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "rgba(255,255,255,0.5)", padding: "3px 0" } },
+              h("span", { style: { color: "#10b981", fontSize: "10px" } }, "✓"),
+              h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, m.team_a),
+              h("span", { style: { fontWeight: 800, color: "#10b981" } }, `${m.score_a}-${m.score_b}`),
+              h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, m.team_b)
+            ))
+          )
+        ) : null
+      );
+    }))
+  );
+}
+
+function renderPredictions() {
+  const cp = state.currentPlayer;
+  const allTeams = [...new Set(state.matches.flatMap(m => [m.team_a, m.team_b]))].sort();
+  const sorted = [...state.matches].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+  const byDate = {};
+  sorted.forEach(m => { const k = fmtShort(m.kickoff); if (!byDate[k]) byDate[k] = []; byDate[k].push(m); });
+  const now = new Date();
+  const firstUnplayed = sorted.find(m => new Date(m.kickoff) > now && m.score_a === null);
+  const medals = ["🥇","🥈","🥉"];
+  const labels = ["Campeão","2º Lugar","3º Lugar"];
+
+  return h("div", { className: "content" },
+    h("h2", { style: { marginBottom: "4px" } }, "Os Meus Prognósticos"),
+    h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "16px" } },
+      "A jogar como ", h("span", { style: { color: "#34d399", fontWeight: 700 } }, cp?.name || "")
+    ),
+    // Podium
+    h("div", { className: "podium-bar" },
+      h("div", { className: "podium-card" },
+        h("div", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(251,191,36,0.8)", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Pódio Final"),
+        h("div", { style: { display: "flex", gap: "6px" } },
+          ...[0,1,2].map(i => {
+            const sel = document.createElement("select");
+            sel.className = "podium-select";
+            sel.disabled = state.submitted || state.deadlinePassed;
+            sel.style.cssText = (state.submitted || state.deadlinePassed) ? "background:rgba(255,255,255,0.03);color:rgba(255,255,255,0.4);cursor:not-allowed;" : "";
+            const def = document.createElement("option"); def.value = ""; def.disabled = true; def.textContent = "—"; def.style.background = "#1e293b";
+            sel.appendChild(def);
+            allTeams.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = t; o.style.background = "#1e293b"; sel.appendChild(o); });
+            sel.value = state.editPodium[i] || "";
+            sel.addEventListener("change", () => { if (!state.submitted) { const ep = [...state.editPodium]; ep[i] = sel.value; setState({ editPodium: ep }); } });
+            return h("div", { style: { flex: 1 } },
+              h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.35)", marginBottom: "4px", textAlign: "center" } }, `${medals[i]} ${labels[i]}`),
+              sel
+            );
+          })
+        )
+      )
+    ),
+    // Matches by day
+    ...Object.entries(byDate).map(([dateKey, dayMatches]) => {
+      const isToday = dayMatches.some(m => m.id === firstUnplayed?.id);
+      return h("div", { style: { marginBottom: "16px" }, id: isToday ? "today-anchor" : undefined },
+        h("div", { style: { fontSize: "11px", fontWeight: 700, color: isToday ? "#34d399" : "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" } },
+          isToday ? h("span", { style: { width: "6px", height: "6px", borderRadius: "50%", background: "#34d399", display: "inline-block" } }) : null,
+          dateKey + (isToday ? " — Próximos jogos" : "")
+        ),
+        ...dayMatches.map(m => {
+          const played = m.score_a !== null;
+          const pred = state.editPreds[m.id] || { score_a: 0, score_b: 0 };
+          const pts = played ? calcPts(pred, m) : null;
+          const ex = played && isExact(pred, m);
+          const locked = played || state.submitted || state.deadlinePassed;
+
+          const inpA = document.createElement("input");
+          inpA.type = "number"; inpA.min = "0"; inpA.max = "20"; inpA.value = pred.score_a;
+          inpA.className = "pred-input"; inpA.disabled = locked;
+          inpA.addEventListener("change", () => { if (!locked) { const ep = { ...state.editPreds }; ep[m.id] = { ...ep[m.id], score_a: parseInt(inpA.value) || 0 }; state.editPreds = ep; } });
+
+          const inpB = document.createElement("input");
+          inpB.type = "number"; inpB.min = "0"; inpB.max = "20"; inpB.value = pred.score_b;
+          inpB.className = "pred-input"; inpB.disabled = locked;
+          inpB.addEventListener("change", () => { if (!locked) { const ep = { ...state.editPreds }; ep[m.id] = { ...ep[m.id], score_b: parseInt(inpB.value) || 0 }; state.editPreds = ep; } });
+
+          return h("div", { style: { padding: "10px 12px", borderRadius: "10px", background: ex ? "rgba(16,185,129,0.06)" : played ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.03)", border: `1px solid ${ex ? "rgba(16,185,129,0.15)" : played ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.06)"}`, marginBottom: "4px" } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "6px" } },
+              h("span", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)" } }, `Grupo ${m.group_letter} · ${fmtTime(m.kickoff)}`),
+              played ? h("span", { style: { fontSize: "10px", color: "rgba(255,255,255,0.25)" } }, `Resultado: ${m.score_a}-${m.score_b}`) : null,
+              pts !== null ? badge(pts, true) : null
+            ),
+            h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+              h("span", { style: { flex: 1, fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "right" } }, m.team_a),
+              inpA,
+              h("span", { style: { fontSize: "13px", color: "rgba(255,255,255,0.2)", fontWeight: 700 } }, "-"),
+              inpB,
+              h("span", { style: { flex: 1, fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "left" } }, m.team_b)
+            )
+          );
+        })
+      );
+    }),
+    // Deadline banner
+    state.deadlinePassed && !state.submitted ? h("div", { className: "deadline-banner" },
+      h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
+      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão de prognósticos já passou.")
+    ) : null,
+    !state.deadlinePassed && !state.submitted && state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
+      h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
+    ) : null,
+    // Submit
+    !state.submitted && !state.deadlinePassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
+      h("button", { className: "submit-btn", onClick: submitPredictions, disabled: state.submitting, style: state.submitting ? { opacity: 0.6, cursor: "wait" } : {} },
+        state.submitting ? "A submeter..." : "Submeter Prognósticos")
+    ) : state.submitted ? h("div", { style: { textAlign: "center", padding: "20px", background: "rgba(52,211,153,0.06)", borderRadius: "14px", border: "1px solid rgba(52,211,153,0.15)", marginTop: "8px" } },
+      h("div", { style: { fontSize: "24px", marginBottom: "6px" } }, "✅"),
+      h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#34d399" } }, "Prognósticos submetidos!"),
+      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "Os teus prognósticos estão bloqueados e não podem ser alterados.")
+    ) : null
+  );
+}
+
+function renderPinModal() {
+  if (!state.showPinModal) return null;
+  const inp = document.createElement("input");
+  inp.type = "password"; inp.maxLength = 30; inp.placeholder = "••••••";
+  inp.className = "pin-input" + (state.pinError ? " error" : "");
+  inp.value = state.pinValue;
+  inp.addEventListener("input", (e) => { state.pinValue = e.target.value; state.pinError = false; });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") verifyPin(); });
+  setTimeout(() => inp.focus(), 100);
+
+  return h("div", { className: "pin-overlay", onClick: (e) => { if (e.target.className === "pin-overlay") cancelPin(); } },
+    h("div", { className: "pin-modal" },
+      h("div", { style: { fontSize: "32px", marginBottom: "8px" } }, "🔒"),
+      h("div", { style: { fontSize: "15px", fontWeight: 700, color: "#fff", marginBottom: "4px" } }, "Introduz o teu código"),
+      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "4px" } },
+        "A submeter como ", h("span", { style: { color: "#34d399", fontWeight: 700 } }, state.currentPlayer?.name || "")
+      ),
+      inp,
+      state.pinError ? h("div", { style: { fontSize: "12px", color: "#ef4444", fontWeight: 600, marginBottom: "8px" } }, "Código incorrecto") : null,
+      h("button", { className: "pin-btn", onClick: verifyPin }, "Confirmar"),
+      h("button", { className: "pin-cancel", onClick: cancelPin }, "Cancelar")
+    )
+  );
+}
+
+function render() {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+
+  if (state.loading) {
+    app.appendChild(h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "80vh", gap: "16px" } },
+      h("div", { className: "spinner" }), h("div", { style: { color: "rgba(255,255,255,0.5)", fontSize: "13px" } }, "A carregar dados...")
+    ));
+    return;
+  }
+  if (state.error) {
+    app.appendChild(h("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "80vh", gap: "12px", padding: "20px" } },
+      h("div", { style: { fontSize: "32px" } }, "⚠️"),
+      h("div", { style: { color: "#ef4444", fontSize: "14px", fontWeight: 600 } }, "Erro ao carregar"),
+      h("div", { style: { color: "rgba(255,255,255,0.4)", fontSize: "12px", textAlign: "center" } }, state.error),
+      h("button", { onClick: loadData, style: { marginTop: "8px", padding: "8px 20px", borderRadius: "8px", border: "none", background: "#34d399", color: "#0f172a", fontWeight: 700, fontSize: "13px", cursor: "pointer", fontFamily: "inherit" } }, "Tentar novamente")
+    ));
+    return;
+  }
+
+  app.appendChild(renderHeader());
+
+  if (state.view === "matches") app.appendChild(renderMatches());
+  else if (state.view === "matchDetail") app.appendChild(renderMatchDetail());
+  else if (state.view === "leaderboard") app.appendChild(renderLeaderboard());
+  else if (state.view === "predictions") app.appendChild(renderPredictions());
+
+  app.appendChild(renderNav());
+
+  // PIN modal overlay
+  const pinModal = renderPinModal();
+  if (pinModal) app.appendChild(pinModal);
+
+  // Auto-scroll to today on predictions view
+  if (state.view === "predictions") {
+    setTimeout(() => { const el = document.getElementById("today-anchor"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 200);
+  }
+}
+
+// ─── INIT ────────────────────────────────────────────────────────────
+loadData();
+</script>
+</body>
+</html>
