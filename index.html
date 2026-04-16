@@ -97,7 +97,8 @@
 
   /* Bracket */
   .bracket-match { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 10px 12px; margin-bottom: 4px; }
-  .bracket-select { width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 12px; font-weight: 600; font-family: inherit; outline: none; cursor: pointer; }
+  .bracket-match--picked { border-color: rgba(52,211,153,0.2); background: rgba(52,211,153,0.04); }
+  .bracket-select { flex: 1; padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 12px; font-weight: 600; font-family: inherit; outline: none; cursor: pointer; }
   .bracket-select:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* Loading */
@@ -344,14 +345,116 @@ async function submitPredictions() {
 }
 
 // ─── BRACKET ─────────────────────────────────────────────────────────
-const BRACKET_ROUNDS = [
-  { id: "r32",   label: "Ronda de 32",      slots: 16 },
-  { id: "r16",   label: "Oitavos de Final",  slots: 8  },
-  { id: "qf",    label: "Quartos de Final",  slots: 4  },
-  { id: "sf",    label: "Meias-Final",       slots: 2  },
-  { id: "third", label: "3º Lugar",          slots: 1  },
-  { id: "final", label: "Final",             slots: 1  },
+// FIFA WC2026 knockout bracket — fixed structure, no redraw
+// R32 matchups sourced from official FIFA competition regulations
+const R32 = [
+  { slot:0,  a:{type:'runnerup',group:'A'}, b:{type:'runnerup',group:'B'} },
+  { slot:1,  a:{type:'winner', group:'E'}, b:{type:'third',groups:['A','B','C','D','F']} },
+  { slot:2,  a:{type:'winner', group:'F'}, b:{type:'runnerup',group:'C'} },
+  { slot:3,  a:{type:'winner', group:'C'}, b:{type:'runnerup',group:'F'} },
+  { slot:4,  a:{type:'winner', group:'I'}, b:{type:'third',groups:['C','D','F','G','H']} },
+  { slot:5,  a:{type:'runnerup',group:'E'}, b:{type:'runnerup',group:'I'} },
+  { slot:6,  a:{type:'winner', group:'A'}, b:{type:'third',groups:['C','E','F','H','I']} },
+  { slot:7,  a:{type:'winner', group:'L'}, b:{type:'third',groups:['E','H','I','J','K']} },
+  { slot:8,  a:{type:'winner', group:'D'}, b:{type:'third',groups:['B','E','F','I','J']} },
+  { slot:9,  a:{type:'winner', group:'G'}, b:{type:'third',groups:['A','E','H','I','J']} },
+  { slot:10, a:{type:'runnerup',group:'K'}, b:{type:'runnerup',group:'L'} },
+  { slot:11, a:{type:'winner', group:'H'}, b:{type:'runnerup',group:'J'} },
+  { slot:12, a:{type:'winner', group:'B'}, b:{type:'third',groups:['E','F','G','I','J']} },
+  { slot:13, a:{type:'winner', group:'J'}, b:{type:'runnerup',group:'H'} },
+  { slot:14, a:{type:'winner', group:'K'}, b:{type:'third',groups:['D','E','I','J','L']} },
+  { slot:15, a:{type:'runnerup',group:'D'}, b:{type:'runnerup',group:'G'} },
 ];
+const R16 = [
+  { slot:0, a:{from:'r32',slot:1},  b:{from:'r32',slot:4}  },
+  { slot:1, a:{from:'r32',slot:0},  b:{from:'r32',slot:2}  },
+  { slot:2, a:{from:'r32',slot:3},  b:{from:'r32',slot:5}  },
+  { slot:3, a:{from:'r32',slot:6},  b:{from:'r32',slot:7}  },
+  { slot:4, a:{from:'r32',slot:10}, b:{from:'r32',slot:11} },
+  { slot:5, a:{from:'r32',slot:8},  b:{from:'r32',slot:9}  },
+  { slot:6, a:{from:'r32',slot:13}, b:{from:'r32',slot:15} },
+  { slot:7, a:{from:'r32',slot:12}, b:{from:'r32',slot:14} },
+];
+const QF = [
+  { slot:0, a:{from:'r16',slot:0}, b:{from:'r16',slot:1} },
+  { slot:1, a:{from:'r16',slot:4}, b:{from:'r16',slot:5} },
+  { slot:2, a:{from:'r16',slot:2}, b:{from:'r16',slot:3} },
+  { slot:3, a:{from:'r16',slot:6}, b:{from:'r16',slot:7} },
+];
+const SF = [
+  { slot:0, a:{from:'qf',slot:0}, b:{from:'qf',slot:1} },
+  { slot:1, a:{from:'qf',slot:2}, b:{from:'qf',slot:3} },
+];
+const BRACKET_STRUCTURE = [
+  { id:'r32',   label:'Ronda de 32',      matches: R32   },
+  { id:'r16',   label:'Oitavos de Final', matches: R16   },
+  { id:'qf',    label:'Quartos de Final', matches: QF    },
+  { id:'sf',    label:'Meias-Final',      matches: SF    },
+  { id:'third', label:'3º Lugar',         matches: [{ slot:0, a:{from:'sf',slot:0,loser:true}, b:{from:'sf',slot:1,loser:true} }] },
+  { id:'final', label:'Final',            matches: [{ slot:0, a:{from:'sf',slot:0}, b:{from:'sf',slot:1} }] },
+];
+
+// Compute group standings from played group matches
+function computeGroupStandings() {
+  const groups = {};
+  state.matches.forEach(m => {
+    if (!groups[m.group_letter]) groups[m.group_letter] = {};
+    [m.team_a, m.team_b].forEach(t => {
+      if (!groups[m.group_letter][t]) groups[m.group_letter][t] = { team:t, pts:0, gd:0, gf:0, played:0 };
+    });
+    if (m.score_a !== null) {
+      const g = groups[m.group_letter];
+      g[m.team_a].played++; g[m.team_b].played++;
+      g[m.team_a].gf += m.score_a; g[m.team_a].gd += (m.score_a - m.score_b);
+      g[m.team_b].gf += m.score_b; g[m.team_b].gd += (m.score_b - m.score_a);
+      if (m.score_a > m.score_b) g[m.team_a].pts += 3;
+      else if (m.score_b > m.score_a) g[m.team_b].pts += 3;
+      else { g[m.team_a].pts++; g[m.team_b].pts++; }
+    }
+  });
+  const result = {};
+  Object.entries(groups).forEach(([grp, teams]) => {
+    result[grp] = Object.values(teams).sort((a,b) => b.pts-a.pts || b.gd-a.gd || b.gf-a.gf);
+  });
+  return result;
+}
+
+// Resolve the actual team (or null) and a display label for a bracket slot descriptor
+function resolveTeam(desc, editBracket, standings) {
+  if (desc.type) {
+    // R32 group-based source
+    const lbl = desc.type === 'winner'   ? `1º Gr.${desc.group}`
+              : desc.type === 'runnerup' ? `2º Gr.${desc.group}`
+              : `Melhor 3º (${desc.groups.join('/')})`;
+    const grp = standings[desc.group];
+    if (!grp) return { team: null, label: lbl };
+    const complete = grp.every(t => t.played === 3);
+    if (!complete) return { team: null, label: lbl };
+    if (desc.type === 'winner')   return { team: grp[0]?.team ?? null, label: lbl };
+    if (desc.type === 'runnerup') return { team: grp[1]?.team ?? null, label: lbl };
+    // 3rd-place: too complex pre-tournament; show label only
+    return { team: null, label: lbl };
+  }
+
+  // Later-round source: winner or loser of a previous match
+  const rlabels = { r32:'R32', r16:'R16', qf:'QF', sf:'SF' };
+  const srcKey = `${desc.from}-${desc.slot}`;
+  const fallback = `${desc.loser ? 'Perd.' : 'Venc.'} ${rlabels[desc.from]} J${desc.slot+1}`;
+
+  if (desc.loser) {
+    const srcRound = BRACKET_STRUCTURE.find(r => r.id === desc.from);
+    const srcMatch = srcRound?.matches.find(m => m.slot === desc.slot);
+    if (!srcMatch) return { team: null, label: fallback };
+    const { team: tA } = resolveTeam(srcMatch.a, editBracket, standings);
+    const { team: tB } = resolveTeam(srcMatch.b, editBracket, standings);
+    const winner = editBracket[srcKey];
+    const loser = (winner && tA && tB) ? (winner === tA ? tB : tA) : null;
+    return { team: loser, label: fallback };
+  }
+
+  const winner = editBracket[srcKey];
+  return { team: winner || null, label: fallback };
+}
 
 async function submitBracket() {
   if (state.bracketSubmitting) return;
@@ -362,8 +465,10 @@ async function submitBracket() {
     setState({ bracketSubmitting: true });
     try {
       const bracket = picks.map(([key, picked_team]) => {
-        const [round, slot] = key.split("-");
-        return { round, slot: parseInt(slot), picked_team };
+        const parts = key.split("-");
+        const slot = parseInt(parts.pop());
+        const round = parts.join("-");
+        return { round, slot, picked_team };
       });
       const res = await fetch(`${SUPABASE_URL}/functions/v1/submit-bracket`, {
         method: "POST",
@@ -383,43 +488,70 @@ async function submitBracket() {
 
 function renderBracket() {
   const allTeams = [...new Set(state.matches.flatMap(m => [m.team_a, m.team_b]))].sort();
-  const hasBracket = Object.keys(state.editBracket).some(k => state.editBracket[k]);
+  const standings = computeGroupStandings();
+  const hasBracket = Object.values(state.editBracket).some(t => t);
+  const locked = state.deadlinePassed;
 
   return h("div", { className: "content" },
     h("h2", { style: { marginBottom: "4px" } }, "Fase Final"),
-    h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "20px" } },
-      "Seleciona o vencedor de cada jogo em cada ronda. As equipas qualificadas serão confirmadas após a fase de grupos (28 Jun)."
+    h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "8px" } },
+      "Seleciona o vencedor de cada jogo. Os vencedores avançam automaticamente para a ronda seguinte."
     ),
-    ...BRACKET_ROUNDS.map(round =>
-      h("div", { style: { marginBottom: "24px" } },
-        h("div", { style: { fontSize: "11px", fontWeight: 700, color: "#34d399", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" } },
+    h("p", { style: { fontSize: "11px", color: "rgba(255,255,255,0.25)", marginBottom: "20px" } },
+      "* As equipas dos grupos serão confirmadas após 28 Jun. As 8 melhores 3ªs classificadas seguem regras FIFA (Anexo C)."
+    ),
+
+    ...BRACKET_STRUCTURE.map(round =>
+      h("div", { style: { marginBottom: "28px" } },
+        h("div", { style: { fontSize: "11px", fontWeight: 700, color: "#34d399", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "10px" } },
           round.label
         ),
-        ...Array.from({ length: round.slots }, (_, i) => {
-          const key = `${round.id}-${i}`;
+        ...round.matches.map(match => {
+          const key = `${round.id}-${match.slot}`;
           const picked = state.editBracket[key] || "";
-          const locked = state.deadlinePassed;
+          const { team: teamA, label: labelA } = resolveTeam(match.a, state.editBracket, standings);
+          const { team: teamB, label: labelB } = resolveTeam(match.b, state.editBracket, standings);
+          const bothKnown = !!(teamA && teamB);
+          const options = bothKnown ? [teamA, teamB] : allTeams;
 
           const sel = document.createElement("select");
           sel.className = "bracket-select";
           sel.disabled = locked;
-          const def = document.createElement("option"); def.value = ""; def.textContent = "— Selecionar vencedor —"; def.style.background = "#1e293b";
+          const def = document.createElement("option"); def.value = ""; def.textContent = "— Vencedor —"; def.style.background = "#1e293b";
           sel.appendChild(def);
-          allTeams.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = t; o.style.background = "#1e293b"; sel.appendChild(o); });
+          options.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = t; o.style.background = "#1e293b"; sel.appendChild(o); });
           sel.value = picked;
           sel.addEventListener("change", () => {
-            if (!locked) { const eb = { ...state.editBracket }; eb[key] = sel.value; state.editBracket = eb; }
+            if (!locked) { const eb = { ...state.editBracket }; eb[key] = sel.value; state.editBracket = eb; render(); }
           });
 
-          return h("div", { className: "bracket-match" },
-            h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", marginBottom: "6px" } }, `Jogo ${i + 1}`),
-            sel
+          return h("div", { className: `bracket-match${picked ? " bracket-match--picked" : ""}` },
+            // Team A vs Team B display
+            h("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" } },
+              h("span", { style: {
+                flex: 1, textAlign: "center", fontSize: "11px", fontWeight: 600, padding: "6px 4px",
+                borderRadius: "6px", color: (picked === teamA && teamA) ? "#0f172a" : teamA ? "#fff" : "rgba(255,255,255,0.3)",
+                background: (picked === teamA && teamA) ? "#34d399" : "rgba(255,255,255,0.05)"
+              }}, teamA || labelA),
+              h("span", { style: { fontSize: "10px", color: "rgba(255,255,255,0.2)", fontWeight: 700 } }, "vs"),
+              h("span", { style: {
+                flex: 1, textAlign: "center", fontSize: "11px", fontWeight: 600, padding: "6px 4px",
+                borderRadius: "6px", color: (picked === teamB && teamB) ? "#0f172a" : teamB ? "#fff" : "rgba(255,255,255,0.3)",
+                background: (picked === teamB && teamB) ? "#34d399" : "rgba(255,255,255,0.05)"
+              }}, teamB || labelB)
+            ),
+            // Winner selector
+            h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+              h("span", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", whiteSpace: "nowrap" } }, "Vencedor:"),
+              sel
+            )
           );
         })
       )
     ),
-    // Deadline info
-    state.deadlinePassed
+
+    // Deadline / submit
+    locked
       ? h("div", { className: "deadline-banner" },
           h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
           h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão já passou.")
@@ -427,8 +559,7 @@ function renderBracket() {
       : state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
           h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
         ) : null,
-    // Save button
-    !state.deadlinePassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
+    !locked ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
       h("button", { className: "submit-btn", onClick: submitBracket, disabled: state.bracketSubmitting, style: state.bracketSubmitting ? { opacity: 0.6, cursor: "wait" } : {} },
         state.bracketSubmitting ? "A guardar..." : hasBracket ? "Actualizar Fase Final" : "Guardar Fase Final")
     ) : null
