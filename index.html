@@ -6,6 +6,7 @@
 <title>Prognósticos WC 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f172a; color: #fff; font-family: 'DM Sans', -apple-system, sans-serif; max-width: 480px; margin: 0 auto; min-height: 100vh; padding-bottom: 80px; }
@@ -1153,6 +1154,47 @@ function renderLeaderboard() {
   );
 }
 
+function generateTemplate() {
+  const sorted = [...state.matches].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+  const rows = [["Grupo", "Data", "Equipa A", "Marcador A", "Marcador B", "Equipa B", "id"]];
+  sorted.forEach(m => rows.push([m.group_letter, fmtDate(m.kickoff), m.team_a, "", "", m.team_b, m.id]));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 6 }, { wch: 16 }, { wch: 18 }, { wch: 11 }, { wch: 11 }, { wch: 18 }, { wch: 10 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Prognósticos");
+  XLSX.writeFile(wb, `prognosticos_${(state.currentPlayer?.name || "template").replace(/\s+/g, "_")}.xlsx`);
+}
+
+function importExcel(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+      const newPreds = { ...state.editPreds };
+      let count = 0;
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const id = row[6];
+        const scoreA = parseInt(row[3]);
+        const scoreB = parseInt(row[4]);
+        if (!id) continue;
+        if (isNaN(scoreA) || isNaN(scoreB) || scoreA < 0 || scoreB < 0 || scoreA > 20 || scoreB > 20) continue;
+        newPreds[id] = { score_a: scoreA, score_b: scoreB };
+        count++;
+      }
+      if (count === 0) { state.importMsg = "⚠ Nenhum resultado válido encontrado"; }
+      else { state.editPreds = newPreds; state.predictionsEdited = true; state.importMsg = `✓ ${count} prognósticos importados`; }
+    } catch (_) {
+      state.importMsg = "⚠ Erro ao ler o ficheiro";
+    }
+    render();
+    setTimeout(() => { state.importMsg = null; render(); }, 3000);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
 function renderPredictions() {
   const cp = state.currentPlayer;
   const sorted = [...state.matches].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
@@ -1168,9 +1210,18 @@ function renderPredictions() {
 
   return h("div", { className: "content" },
     h("h2", { style: { marginBottom: "4px" } }, "Os Meus Prognósticos"),
-    h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "16px" } },
+    h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "12px" } },
       "A jogar como ", h("span", { style: { color: "#34d399", fontWeight: 700 } }, cp?.name || "")
     ),
+    // Excel import/export
+    h("div", { style: { display: "flex", gap: "8px", marginBottom: state.importMsg ? "8px" : "16px" } },
+      h("button", { onClick: generateTemplate, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Template Excel"),
+      h("label", { style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "center", display: "block" } },
+        "⬆ Importar Excel",
+        h("input", { type: "file", accept: ".xlsx", style: { display: "none" }, onChange: (e) => { if (e.target.files[0]) { importExcel(e.target.files[0]); e.target.value = ""; } } })
+      )
+    ),
+    state.importMsg ? h("div", { style: { background: state.importMsg.startsWith("✓") ? "rgba(52,211,153,0.1)" : "rgba(239,68,68,0.08)", border: `1px solid ${state.importMsg.startsWith("✓") ? "rgba(52,211,153,0.2)" : "rgba(239,68,68,0.2)"}`, borderRadius: "10px", padding: "9px 14px", marginBottom: "12px", fontSize: "13px", color: state.importMsg.startsWith("✓") ? "#34d399" : "#f87171", textAlign: "center", fontWeight: 600 } }, state.importMsg) : null,
     // Podium — read-only, derived from bracket (locked until predictions submitted)
     h("div", { className: "podium-bar" },
       h("div", { className: "podium-card" },
