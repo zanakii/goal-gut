@@ -229,7 +229,7 @@ let state = {
   expanded: {}, dropdownOpen: false, loading: true, error: null,
   deadline: null, deadlinePassed: false,
   showPinModal: false, pinValue: "", pinError: false, pinCallback: null,
-  editBracket: {}, allBrackets: {}, bracketSubmitting: false
+  editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}
 };
 
 function setState(partial) { Object.assign(state, partial); render(); }
@@ -287,6 +287,7 @@ async function loadData() {
       players, matches, allPreds: predMap, allPodiums: podMap, allBrackets: bracketMap, currentPlayer: cp,
       editPreds, editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
       editBracket: bracketMap[cp?.id] || {},
+      tiebreaks: {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
       deadline, deadlinePassed
     });
@@ -302,6 +303,7 @@ function switchPlayer(p) {
     currentPlayer: p, dropdownOpen: false, editPreds,
     editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
     editBracket: state.allBrackets[p.id] || {},
+    tiebreaks: {},
     submitted: Object.keys(myPreds).length > 0
   });
 }
@@ -419,24 +421,110 @@ function computeGroupStandings() {
   return result;
 }
 
+// ─── PREDICTED STANDINGS ─────────────────────────────────────────────
+function computePredictedStandings(editPreds, matches) {
+  const groups = {};
+  matches.forEach(m => {
+    if (!groups[m.group_letter]) groups[m.group_letter] = {};
+    [m.team_a, m.team_b].forEach(t => {
+      if (!groups[m.group_letter][t]) groups[m.group_letter][t] = { team: t, pts: 0, gd: 0, gf: 0, played: 0 };
+    });
+    const pred = editPreds[m.id];
+    const sa = pred ? (pred.score_a ?? 0) : 0;
+    const sb = pred ? (pred.score_b ?? 0) : 0;
+    const g = groups[m.group_letter];
+    g[m.team_a].played++; g[m.team_b].played++;
+    g[m.team_a].gf += sa; g[m.team_a].gd += (sa - sb);
+    g[m.team_b].gf += sb; g[m.team_b].gd += (sb - sa);
+    if (sa > sb) g[m.team_a].pts += 3;
+    else if (sb > sa) g[m.team_b].pts += 3;
+    else { g[m.team_a].pts++; g[m.team_b].pts++; }
+  });
+  const result = {};
+  Object.entries(groups).forEach(([grp, teams]) => {
+    result[grp] = Object.values(teams).sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+  });
+  return result;
+}
+
+function applyTiebreaks(standings, tiebreaks) {
+  const result = {};
+  Object.entries(standings).forEach(([grp, sorted]) => {
+    const teams = [...sorted];
+    for (let i = 0; i < teams.length - 1; i++) {
+      const a = teams[i], b = teams[i + 1];
+      if (a.pts === b.pts && a.gd === b.gd && a.gf === b.gf) {
+        const key = `${grp}-${i + 1}`;
+        if (tiebreaks[key] === b.team) { teams[i] = b; teams[i + 1] = a; }
+      }
+    }
+    result[grp] = teams;
+  });
+  return result;
+}
+
+function detectPendingTies(standings, tiebreaks) {
+  const ties = [];
+  Object.entries(standings).forEach(([grp, sorted]) => {
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i], b = sorted[i + 1];
+      if (a.pts === b.pts && a.gd === b.gd && a.gf === b.gf) {
+        const key = `${grp}-${i + 1}`;
+        const resolved = tiebreaks[key];
+        if (!resolved || (resolved !== a.team && resolved !== b.team)) {
+          ties.push({ group: grp, pos: i + 1, key, teams: [a.team, b.team] });
+        }
+      }
+    }
+  });
+  return ties;
+}
+
+function computeBest3rds(standings) {
+  return Object.entries(standings)
+    .map(([grp, sorted]) => sorted[2] ? { team: sorted[2].team, group: grp, pts: sorted[2].pts, gd: sorted[2].gd, gf: sorted[2].gf } : null)
+    .filter(Boolean)
+    .sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf)
+    .slice(0, 8);
+}
+
+const THIRD_SLOT_GROUPS = {
+  1:  ['A','B','C','D','F'],
+  4:  ['C','D','F','G','H'],
+  6:  ['C','E','F','H','I'],
+  7:  ['E','H','I','J','K'],
+  8:  ['B','E','F','I','J'],
+  9:  ['A','E','H','I','J'],
+  12: ['E','F','G','I','J'],
+  14: ['D','E','I','J','L']
+};
+
+function assignBest3rdsToSlots(best3rds) {
+  const result = {};
+  const used = new Set();
+  for (const [slot, groups] of Object.entries(THIRD_SLOT_GROUPS)) {
+    const candidate = best3rds.find(t => groups.includes(t.group) && !used.has(t.team));
+    if (candidate) { result[slot] = candidate.team; used.add(candidate.team); }
+  }
+  return result;
+}
+
 // Resolve the actual team (or null) and a display label for a bracket slot descriptor
-function resolveTeam(desc, editBracket, standings) {
+function resolveTeam(desc, editBracket, standings, best3rds, r32Slot) {
   if (desc.type) {
-    // R32 group-based source
     const lbl = desc.type === 'winner'   ? `1º Gr.${desc.group}`
               : desc.type === 'runnerup' ? `2º Gr.${desc.group}`
-              : `Melhor 3º (${desc.groups.join('/')})`;
+              : `Melhor 3º`;
+    if (desc.type === 'third') {
+      return { team: best3rds?.[r32Slot] ?? null, label: lbl };
+    }
     const grp = standings[desc.group];
     if (!grp) return { team: null, label: lbl };
-    const complete = grp.every(t => t.played === 3);
-    if (!complete) return { team: null, label: lbl };
     if (desc.type === 'winner')   return { team: grp[0]?.team ?? null, label: lbl };
     if (desc.type === 'runnerup') return { team: grp[1]?.team ?? null, label: lbl };
-    // 3rd-place: too complex pre-tournament; show label only
     return { team: null, label: lbl };
   }
 
-  // Later-round source: winner or loser of a previous match
   const rlabels = { r32:'R32', r16:'R16', qf:'QF', sf:'SF' };
   const srcKey = `${desc.from}-${desc.slot}`;
   const fallback = `${desc.loser ? 'Perd.' : 'Venc.'} ${rlabels[desc.from]} J${desc.slot+1}`;
@@ -445,8 +533,8 @@ function resolveTeam(desc, editBracket, standings) {
     const srcRound = BRACKET_STRUCTURE.find(r => r.id === desc.from);
     const srcMatch = srcRound?.matches.find(m => m.slot === desc.slot);
     if (!srcMatch) return { team: null, label: fallback };
-    const { team: tA } = resolveTeam(srcMatch.a, editBracket, standings);
-    const { team: tB } = resolveTeam(srcMatch.b, editBracket, standings);
+    const { team: tA } = resolveTeam(srcMatch.a, editBracket, standings, best3rds, srcMatch.slot);
+    const { team: tB } = resolveTeam(srcMatch.b, editBracket, standings, best3rds, srcMatch.slot);
     const winner = editBracket[srcKey];
     const loser = (winner && tA && tB) ? (winner === tA ? tB : tA) : null;
     return { team: loser, label: fallback };
@@ -488,18 +576,66 @@ async function submitBracket() {
 
 function renderBracket() {
   const allTeams = [...new Set(state.matches.flatMap(m => [m.team_a, m.team_b]))].sort();
-  const standings = computeGroupStandings();
+
+  // Derive standings from the player's own predictions, not actual results
+  const rawStandings = computePredictedStandings(state.editPreds, state.matches);
+  const standings = applyTiebreaks(rawStandings, state.tiebreaks);
+  const pendingTies = detectPendingTies(rawStandings, state.tiebreaks);
+  const best3rds = computeBest3rds(standings);
+  const best3rdsAssignment = assignBest3rdsToSlots(best3rds);
+
   const hasBracket = Object.values(state.editBracket).some(t => t);
   const locked = state.deadlinePassed;
+
+  if (!state.submitted) {
+    return h("div", { className: "content" },
+      h("h2", null, "Fase Final"),
+      h("div", { style: { textAlign: "center", padding: "60px 20px", color: "rgba(255,255,255,0.4)", fontSize: "13px", lineHeight: "1.6" } },
+        h("div", { style: { fontSize: "36px", marginBottom: "12px" } }, "📋"),
+        h("div", { style: { fontSize: "15px", fontWeight: 700, color: "rgba(255,255,255,0.6)", marginBottom: "8px" } }, "Prognósticos em falta"),
+        "Faz os teus prognósticos na aba ",
+        h("strong", { style: { color: "#34d399" } }, "✏️ Prognósticos"),
+        " para ver o quadro derivado."
+      )
+    );
+  }
 
   return h("div", { className: "content" },
     h("h2", { style: { marginBottom: "4px" } }, "Fase Final"),
     h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "8px" } },
-      "Seleciona o vencedor de cada jogo. Os vencedores avançam automaticamente para a ronda seguinte."
+      "Quadro derivado dos teus prognósticos de grupo. Seleciona o vencedor de cada jogo."
     ),
-    h("p", { style: { fontSize: "11px", color: "rgba(255,255,255,0.25)", marginBottom: "20px" } },
-      "* As equipas dos grupos serão confirmadas após 28 Jun. As 8 melhores 3ªs classificadas seguem regras FIFA (Anexo C)."
+    h("p", { style: { fontSize: "11px", color: "rgba(255,255,255,0.25)", marginBottom: "16px" } },
+      "* As 8 melhores 3ªs classificadas são atribuídas por pts/DG/MG (aproximação ao Anexo C FIFA)."
     ),
+
+    // Tie-break resolution section
+    pendingTies.length > 0 ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: "12px", padding: "12px 14px", marginBottom: "16px" } },
+      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(251,191,36,0.9)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" } }, "⚠️ Empates a resolver"),
+      ...pendingTies.map(tie => {
+        const posLabel = ["1º","2º","3º"][tie.pos - 1] || `${tie.pos}º`;
+        return h("div", { style: { marginBottom: "10px" } },
+          h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.55)", marginBottom: "6px" } },
+            `Grupo ${tie.group} — `,
+            h("strong", { style: { color: "#fff" } }, tie.teams[0]),
+            " e ",
+            h("strong", { style: { color: "#fff" } }, tie.teams[1]),
+            ` empatados. Qual fica em ${posLabel}?`
+          ),
+          h("div", { style: { display: "flex", gap: "6px" } },
+            ...tie.teams.map(team => h("button", {
+              style: {
+                flex: 1, padding: "7px 10px", borderRadius: "8px",
+                border: "1px solid rgba(251,191,36,0.3)", background: "rgba(251,191,36,0.1)",
+                color: "rgba(251,191,36,0.9)", fontSize: "12px", fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit"
+              },
+              onClick: () => setState({ tiebreaks: { ...state.tiebreaks, [tie.key]: team } })
+            }, team))
+          )
+        );
+      })
+    ) : null,
 
     ...BRACKET_STRUCTURE.map(round =>
       h("div", { style: { marginBottom: "28px" } },
@@ -509,8 +645,8 @@ function renderBracket() {
         ...round.matches.map(match => {
           const key = `${round.id}-${match.slot}`;
           const picked = state.editBracket[key] || "";
-          const { team: teamA, label: labelA } = resolveTeam(match.a, state.editBracket, standings);
-          const { team: teamB, label: labelB } = resolveTeam(match.b, state.editBracket, standings);
+          const { team: teamA, label: labelA } = resolveTeam(match.a, state.editBracket, standings, best3rdsAssignment, match.slot);
+          const { team: teamB, label: labelB } = resolveTeam(match.b, state.editBracket, standings, best3rdsAssignment, match.slot);
           const bothKnown = !!(teamA && teamB);
           const options = bothKnown ? [teamA, teamB] : allTeams;
 
@@ -526,7 +662,6 @@ function renderBracket() {
           });
 
           return h("div", { className: `bracket-match${picked ? " bracket-match--picked" : ""}` },
-            // Team A vs Team B display
             h("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" } },
               h("span", { style: {
                 flex: 1, textAlign: "center", fontSize: "11px", fontWeight: 600, padding: "6px 4px",
@@ -540,7 +675,6 @@ function renderBracket() {
                 background: (picked === teamB && teamB) ? "#34d399" : "rgba(255,255,255,0.05)"
               }}, teamB || labelB)
             ),
-            // Winner selector
             h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
               h("span", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", whiteSpace: "nowrap" } }, "Vencedor:"),
               sel
@@ -550,7 +684,6 @@ function renderBracket() {
       )
     ),
 
-    // Deadline / submit
     locked
       ? h("div", { className: "deadline-banner" },
           h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
