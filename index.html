@@ -153,6 +153,20 @@ function badgeColor(pts) {
   return "#ef4444";
 }
 
+function calcPodiumPts(playerPodium, actualPodium) {
+  if (!actualPodium?.first_place) return null;
+  const actual = [actualPodium.first_place, actualPodium.second_place, actualPodium.third_place];
+  let pts = 0;
+  for (let i = 0; i < 3; i++) {
+    const predicted = playerPodium[i];
+    if (!predicted) { pts += 10; continue; }
+    if (predicted === actual[i]) pts += 0;
+    else if (actual.includes(predicted)) pts += 5;
+    else pts += 10;
+  }
+  return pts;
+}
+
 // ─── FORMATTING ──────────────────────────────────────────────────────
 function fmtShort(iso) { const d = new Date(iso); return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1).toString().padStart(2,"0")}`; }
 function fmtTime(iso) { const d = new Date(iso); return `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`; }
@@ -230,7 +244,7 @@ let state = {
   currentPlayer: null, selectedMatch: null, groupFilter: "all", statusFilter: "all",
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
   expanded: {}, dropdownOpen: false, loading: true, error: null,
-  deadline: null, deadlinePassed: false,
+  deadline: null, deadlinePassed: false, actualPodium: null,
   showPinModal: false, pinValue: "", pinError: false, pinCallback: null,
   editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false
 };
@@ -264,7 +278,7 @@ async function loadData() {
       sbGet("predictions", "select=*"),
       sbGet("podium_predictions", "select=*"),
       sbGet("bracket_predictions", "select=*"),
-      sbGet("tournament_config", "key=eq.submission_deadline")
+      sbGet("tournament_config", "key=in.(submission_deadline,actual_podium)")
     ]);
     const predMap = {};
     preds.forEach(p => { if (!predMap[p.player_id]) predMap[p.player_id] = {}; predMap[p.player_id][p.match_id] = p; });
@@ -281,10 +295,15 @@ async function loadData() {
     // Parse deadline
     let deadline = null;
     let deadlinePassed = false;
-    if (config.length > 0) {
-      deadline = new Date(JSON.parse(JSON.stringify(config[0].value)));
+    const deadlineCfg = config.find(c => c.key === 'submission_deadline');
+    if (deadlineCfg) {
+      deadline = new Date(deadlineCfg.value);
       deadlinePassed = new Date() > deadline;
     }
+    // Parse actual podium (set by admin after tournament ends)
+    let actualPodium = null;
+    const podiumCfg = config.find(c => c.key === 'actual_podium');
+    if (podiumCfg) { try { actualPodium = JSON.parse(podiumCfg.value); } catch (e) {} }
 
     setState({
       players, matches, allPreds: predMap, allPodiums: podMap, allBrackets: bracketMap, currentPlayer: cp,
@@ -292,7 +311,7 @@ async function loadData() {
       editBracket: bracketMap[cp?.id] || {},
       tiebreaks: {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
-      deadline, deadlinePassed
+      deadline, deadlinePassed, actualPodium
     });
   } catch (e) { setState({ error: e.message, loading: false }); }
 }
@@ -918,7 +937,11 @@ function renderLeaderboard() {
       const pts = calcPts(pred, m);
       if (pts !== null) { total += pts; scored++; if (isExact(pred, m)) exacts++; }
     });
-    return { ...p, total, scored, exacts };
+    const pod = state.allPodiums[p.id];
+    const podiumArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
+    const podiumPts = calcPodiumPts(podiumArr, state.actualPodium);
+    if (podiumPts !== null) total += podiumPts;
+    return { ...p, total, scored, exacts, podiumArr, podiumPts };
   }).sort((a, b) => a.total - b.total);
   const medals = ["🥇","🥈","🥉"];
 
@@ -966,7 +989,26 @@ function renderLeaderboard() {
               h("span", { style: { fontWeight: 800, color: "#10b981" } }, `${m.score_a}-${m.score_b}`),
               h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, m.team_b)
             ))
-          )
+          ),
+          // Podium section
+          p.podiumArr.some(t => t) ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.05)" } },
+            h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(251,191,36,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } },
+              p.podiumPts !== null ? `Pódio — ${p.podiumPts} pts` : "Pódio previsto"
+            ),
+            h("div", { style: { display: "flex", gap: "5px" } },
+              ...["🥇","🥈","🥉"].map((medal, i) => {
+                const predicted = p.podiumArr[i];
+                const actual = state.actualPodium ? [state.actualPodium.first_place, state.actualPodium.second_place, state.actualPodium.third_place] : null;
+                const pPts = actual && predicted ? (predicted === actual[i] ? 0 : actual.includes(predicted) ? 5 : 10) : null;
+                const dotColor = pPts === 0 ? "#10b981" : pPts === 5 ? "#fbbf24" : pPts === 10 ? "#ef4444" : "rgba(255,255,255,0.2)";
+                return h("div", { style: { flex: 1, textAlign: "center", padding: "5px 4px", borderRadius: "7px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" } },
+                  h("div", { style: { fontSize: "11px", marginBottom: "3px" } }, medal),
+                  h("div", { style: { fontSize: "11px", fontWeight: 600, color: predicted ? "#fff" : "rgba(255,255,255,0.2)" } }, predicted || "—"),
+                  pPts !== null ? h("div", { style: { fontSize: "10px", fontWeight: 700, color: dotColor, marginTop: "2px" } }, `${pPts}pt`) : null
+                );
+              })
+            )
+          ) : null
         ) : null
       );
     }))
