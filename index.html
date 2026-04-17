@@ -153,18 +153,33 @@ function badgeColor(pts) {
   return "#ef4444";
 }
 
-function calcPodiumPts(playerPodium, actualPodium) {
-  if (!actualPodium?.first_place) return null;
-  const actual = [actualPodium.first_place, actualPodium.second_place, actualPodium.third_place];
-  let pts = 0;
+function matchWinner(m) {
+  if (m.score_a === null) return null;
+  if (m.score_a > m.score_b) return m.team_a;
+  if (m.score_b > m.score_a) return m.team_b;
+  if (m.status === 'pen-home') return m.team_a;
+  if (m.status === 'pen-away') return m.team_b;
+  return null;
+}
+
+function calcPodiumPts(podiumArr, tournamentState) {
+  if (!tournamentState?.groupStageComplete) return null;
+  const { champion, runnerUp, third, eliminated } = tournamentState;
+  const actual = [champion, runnerUp, third];
+  let pts = 0, hasAnyScore = false;
   for (let i = 0; i < 3; i++) {
-    const predicted = playerPodium[i];
-    if (!predicted) { pts += 10; continue; }
-    if (predicted === actual[i]) pts += 0;
-    else if (actual.includes(predicted)) pts += 5;
-    else pts += 10;
+    const predicted = podiumArr[i];
+    if (!predicted) { pts += 10; hasAnyScore = true; continue; }
+    if (eliminated.has(predicted)) {
+      pts += 10; hasAnyScore = true;
+    } else if (actual[i] !== null) {
+      if (predicted === actual[i]) { hasAnyScore = true; }
+      else if (actual.filter(Boolean).includes(predicted)) { pts += 5; hasAnyScore = true; }
+      else { pts += 10; hasAnyScore = true; }
+    }
+    // team still in tournament, position unknown — don't score yet
   }
-  return pts;
+  return hasAnyScore ? pts : null;
 }
 
 // ─── FORMATTING ──────────────────────────────────────────────────────
@@ -430,6 +445,65 @@ function computeGroupStandings() {
     result[grp] = Object.values(teams).sort((a,b) => b.pts-a.pts || b.gd-a.gd || b.gf-a.gf);
   });
   return result;
+}
+
+// Derives actual tournament state from real match results.
+// Knockout matches are seeded via seed-knockout.js after group stage ends.
+function computeActualTournamentState() {
+  const eliminated = new Set();
+  let champion = null, runnerUp = null, third = null;
+
+  const groupMatches = state.matches.filter(m => m.group_letter && m.group_letter.length === 1);
+  const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => m.score_a !== null);
+  if (!groupStageComplete) return { champion, runnerUp, third, eliminated, groupStageComplete: false };
+
+  // Group-stage: teams finishing 3rd/4th that don't qualify as best 3rd are eliminated
+  const standings = computeGroupStandings();
+  const all3rds = Object.entries(standings)
+    .map(([grp, s]) => s[2] ? { team: s[2].team, group: grp, pts: s[2].pts, gd: s[2].gd, gf: s[2].gf } : null)
+    .filter(Boolean)
+    .sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+  const qualifiedThirds = new Set(all3rds.slice(0, 8).map(t => t.team));
+  Object.values(standings).forEach(sorted => {
+    sorted.forEach((t, i) => { if (i >= 2 && !qualifiedThirds.has(t.team)) eliminated.add(t.team); });
+  });
+
+  // R32 → QF: losers are eliminated immediately
+  ['R32', 'R16', 'QF'].forEach(stage => {
+    state.matches.filter(m => m.group_letter === stage).forEach(m => {
+      const w = matchWinner(m);
+      if (w) eliminated.add(w === m.team_a ? m.team_b : m.team_a);
+    });
+  });
+
+  // SF losers go to 3rd place match — not eliminated yet
+  state.matches.filter(m => m.group_letter === 'SF').forEach(m => {
+    const w = matchWinner(m);
+    if (w) eliminated.delete(w === m.team_a ? m.team_b : m.team_a);
+  });
+
+  // 3rd place match
+  const thirdMatch = state.matches.find(m => m.group_letter === '3P');
+  if (thirdMatch) {
+    const w = matchWinner(thirdMatch);
+    if (w) { third = w; eliminated.add(w === thirdMatch.team_a ? thirdMatch.team_b : thirdMatch.team_a); }
+  }
+
+  // Final
+  const finalMatch = state.matches.find(m => m.group_letter === 'F');
+  if (finalMatch) {
+    const w = matchWinner(finalMatch);
+    if (w) { champion = w; runnerUp = w === finalMatch.team_a ? finalMatch.team_b : finalMatch.team_a; }
+  }
+
+  // Fallback: manual actual_podium from tournament_config (covers PEN edge cases)
+  if (!champion && state.actualPodium?.first_place) {
+    champion = state.actualPodium.first_place;
+    runnerUp = state.actualPodium.second_place;
+    third = third || state.actualPodium.third_place;
+  }
+
+  return { champion, runnerUp, third, eliminated, groupStageComplete: true };
 }
 
 // ─── PREDICTED STANDINGS ─────────────────────────────────────────────
@@ -833,8 +907,14 @@ function renderNav() {
   );
 }
 
+const KO_STAGE_LABELS = { R32: 'Ronda de 32', R16: 'Oitavos de Final', QF: 'Quartos de Final', SF: 'Meias-Final', '3P': '3º Lugar', F: 'Final' };
+
 function renderMatches() {
-  const groups = [...new Set(state.matches.map(m => m.group_letter))].sort();
+  const groupLetters = state.matches.map(m => m.group_letter).filter(g => g && g.length === 1);
+  const groups = [...new Set(groupLetters)].sort();
+  const groupMatches = state.matches.filter(m => m.group_letter && m.group_letter.length === 1);
+  const koMatches = state.matches.filter(m => KO_STAGE_LABELS[m.group_letter]);
+  const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => m.score_a !== null);
   const myPreds = state.allPreds[state.currentPlayer?.id] || {};
   let filtered = state.matches.filter(m => {
     if (state.groupFilter !== "all" && m.group_letter !== state.groupFilter) return false;
@@ -887,10 +967,43 @@ function renderMatches() {
       })
     )),
     filtered.length === 0 ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", padding: "40px 0", fontSize: "13px" } }, "Nenhum jogo encontrado") : null,
-    h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
-      h("button", { className: "submit-btn", onClick: () => setState({ view: "bracket" }), style: { background: "linear-gradient(135deg, #4f46e5, #7c3aed)" } },
-        "🏆 Calcular Fase Final")
-    )
+
+    // Knockout section — appears automatically once group stage is complete and matches are seeded
+    groupStageComplete ? h("div", { style: { marginTop: "28px" } },
+      h("div", { style: { height: "1px", background: "rgba(255,255,255,0.06)", marginBottom: "24px" } }),
+      h("h2", { style: { marginBottom: "14px" } }, "Fase Eliminatória"),
+      koMatches.length === 0
+        ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: "12px", padding: "20px 0" } },
+            "Os quadros serão confirmados em breve pela FIFA.")
+        : h("div", null,
+            ...['R32','R16','QF','SF','3P','F'].map(stage => {
+              const ms = koMatches.filter(m => m.group_letter === stage);
+              if (ms.length === 0) return null;
+              return h("div", { style: { marginBottom: "20px" } },
+                h("div", { className: "group-label" }, KO_STAGE_LABELS[stage]),
+                ...ms.map(m => {
+                  const played = m.score_a !== null;
+                  const isPen = m.status === 'pen-home' || m.status === 'pen-away';
+                  return h("div", { className: `match-card ${!played ? "upcoming" : ""}` },
+                    h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", width: "48px", lineHeight: "1.3" } },
+                      h("div", null, fmtShort(m.kickoff)), h("div", null, fmtTime(m.kickoff))
+                    ),
+                    h("div", { style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" } },
+                      h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "right", flex: 1 } }, m.team_a),
+                      played
+                        ? h("span", { className: "score-box" }, `${m.score_a} - ${m.score_b}`)
+                        : h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.2)", minWidth: "44px", textAlign: "center" } }, "vs"),
+                      h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "left", flex: 1 } }, m.team_b)
+                    ),
+                    h("div", { style: { minWidth: "34px", textAlign: "right" } },
+                      isPen ? h("span", { style: { fontSize: "9px", fontWeight: 700, color: "rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.05)", padding: "2px 5px", borderRadius: "4px" } }, "PEN") : null
+                    )
+                  );
+                })
+              );
+            }).filter(Boolean)
+          )
+    ) : null
   );
 }
 
@@ -930,6 +1043,7 @@ function renderMatchDetail() {
 function renderLeaderboard() {
   const played = state.matches.filter(m => m.score_a !== null);
   const progress = state.matches.length > 0 ? (played.length / state.matches.length) * 100 : 0;
+  const tournamentState = computeActualTournamentState();
   const lb = state.players.map(p => {
     let total = 0, scored = 0, exacts = 0;
     played.forEach(m => {
@@ -939,7 +1053,7 @@ function renderLeaderboard() {
     });
     const pod = state.allPodiums[p.id];
     const podiumArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
-    const podiumPts = calcPodiumPts(podiumArr, state.actualPodium);
+    const podiumPts = calcPodiumPts(podiumArr, tournamentState);
     if (podiumPts !== null) total += podiumPts;
     return { ...p, total, scored, exacts, podiumArr, podiumPts };
   }).sort((a, b) => a.total - b.total);
@@ -998,8 +1112,8 @@ function renderLeaderboard() {
             h("div", { style: { display: "flex", gap: "5px" } },
               ...["🥇","🥈","🥉"].map((medal, i) => {
                 const predicted = p.podiumArr[i];
-                const actual = state.actualPodium ? [state.actualPodium.first_place, state.actualPodium.second_place, state.actualPodium.third_place] : null;
-                const pPts = actual && predicted ? (predicted === actual[i] ? 0 : actual.includes(predicted) ? 5 : 10) : null;
+                const actual = tournamentState.groupStageComplete ? [tournamentState.champion, tournamentState.runnerUp, tournamentState.third] : null;
+                const pPts = actual && predicted ? (tournamentState.eliminated.has(predicted) ? 10 : actual[i] !== null ? (predicted === actual[i] ? 0 : actual.filter(Boolean).includes(predicted) ? 5 : 10) : null) : null;
                 const dotColor = pPts === 0 ? "#10b981" : pPts === 5 ? "#fbbf24" : pPts === 10 ? "#ef4444" : "rgba(255,255,255,0.2)";
                 return h("div", { style: { flex: 1, textAlign: "center", padding: "5px 4px", borderRadius: "7px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" } },
                   h("div", { style: { fontSize: "11px", marginBottom: "3px" } }, medal),
