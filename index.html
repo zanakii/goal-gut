@@ -261,7 +261,8 @@ let state = {
   expanded: {}, dropdownOpen: false, loading: true, error: null,
   deadline: null, deadlinePassed: false, actualPodium: null,
   showPinModal: false, pinValue: "", pinError: false, pinCallback: null,
-  editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false
+  editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false,
+  hasBracket: false, bracketStale: false, predictionsEdited: false
 };
 
 function setState(partial) { Object.assign(state, partial); render(); }
@@ -326,7 +327,8 @@ async function loadData() {
       editBracket: bracketMap[cp?.id] || {},
       tiebreaks: {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
-      deadline, deadlinePassed, actualPodium
+      deadline, deadlinePassed, actualPodium,
+      hasBracket: !!podMap[cp?.id], bracketStale: false, predictionsEdited: false
     });
   } catch (e) { setState({ error: e.message, loading: false }); }
 }
@@ -341,25 +343,28 @@ function switchPlayer(p) {
     editPodium: myPodium ? [myPodium.first_place, myPodium.second_place, myPodium.third_place] : ["","",""],
     editBracket: state.allBrackets[p.id] || {},
     tiebreaks: {},
-    submitted: Object.keys(myPreds).length > 0
+    submitted: Object.keys(myPreds).length > 0,
+    hasBracket: !!state.allPodiums[p.id], bracketStale: false, predictionsEdited: false
   });
 }
 
 async function submitPredictions() {
   if (state.submitting) return;
   if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
+  if (state.hasBracket && state.predictionsEdited) {
+    if (!confirm("Editaste os prognósticos após submeter a Fase Final. Ao resubmeter, o quadro ficará desatualizado — terás de refazer a Fase Final. Continuar?")) return;
+  }
   requestPin(async (pin) => {
     setState({ submitting: true });
+    const hadBracket = state.hasBracket;
     try {
       const predictions = Object.entries(state.editPreds).map(([mid, p]) => ({
         player_id: state.currentPlayer.id, match_id: parseInt(mid), score_a: p.score_a, score_b: p.score_b
       }));
-      const [fp, sp, tp] = derivePodiumFromBracket(state.editBracket);
-      const podium = (fp && sp && tp) ? { first_place: fp, second_place: sp, third_place: tp } : null;
       const res = await fetch(`${SUPABASE_URL}/functions/v1/submit-predictions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_KEY}` },
-        body: JSON.stringify({ player_id: state.currentPlayer.id, pin, predictions, podium })
+        body: JSON.stringify({ player_id: state.currentPlayer.id, pin, predictions, podium: null })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -368,6 +373,7 @@ async function submitPredictions() {
         return;
       }
       await loadData();
+      if (hadBracket) { state.bracketStale = true; render(); }
     } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
   });
 }
@@ -670,50 +676,50 @@ function resolveTeam(desc, editBracket, standings, best3rds, r32Slot) {
   return { team: winner || null, label: fallback };
 }
 
-async function submitAll() {
-  if (state.submitting || state.bracketSubmitting) return;
+async function submitBracket() {
+  if (state.bracketSubmitting) return;
   if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
   requestPin(async (pin) => {
-    setState({ submitting: true, bracketSubmitting: true });
+    setState({ bracketSubmitting: true });
     try {
-      // 1. Submit score predictions + derived podium
-      const predictions = Object.entries(state.editPreds).map(([mid, p]) => ({
-        player_id: state.currentPlayer.id, match_id: parseInt(mid), score_a: p.score_a, score_b: p.score_b
-      }));
-      const [fp, sp, tp] = derivePodiumFromBracket(state.editBracket);
-      const podium = (fp && sp && tp) ? { first_place: fp, second_place: sp, third_place: tp } : null;
-      const res1 = await fetch(`${SUPABASE_URL}/functions/v1/submit-predictions`, {
+      // 1. Submit bracket picks
+      const picks = Object.entries(state.editBracket).filter(([, t]) => t);
+      const bracket = picks.map(([key, picked_team]) => {
+        const parts = key.split("-"); const slot = parseInt(parts.pop()); const round = parts.join("-");
+        return { round, slot, picked_team };
+      });
+      const res1 = await fetch(`${SUPABASE_URL}/functions/v1/submit-bracket`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_KEY}` },
-        body: JSON.stringify({ player_id: state.currentPlayer.id, pin, predictions, podium })
+        body: JSON.stringify({ player_id: state.currentPlayer.id, pin, bracket })
       });
       const d1 = await res1.json();
       if (!res1.ok) {
         alert(res1.status === 401 ? "Código incorrecto. Por favor tenta novamente." : "Erro: " + (d1.error || res1.status));
-        setState({ submitting: false, bracketSubmitting: false });
+        setState({ bracketSubmitting: false });
         return;
       }
-      // 2. Submit bracket picks (if any)
-      const picks = Object.entries(state.editBracket).filter(([, t]) => t);
-      if (picks.length > 0) {
-        const bracket = picks.map(([key, picked_team]) => {
-          const parts = key.split("-"); const slot = parseInt(parts.pop()); const round = parts.join("-");
-          return { round, slot, picked_team };
-        });
-        const res2 = await fetch(`${SUPABASE_URL}/functions/v1/submit-bracket`, {
+      // 2. Save derived podium (re-submits existing predictions + new podium)
+      const [fp, sp, tp] = derivePodiumFromBracket(state.editBracket);
+      const podium = (fp && sp && tp) ? { first_place: fp, second_place: sp, third_place: tp } : null;
+      if (podium) {
+        const predictions = Object.entries(state.editPreds).map(([mid, p]) => ({
+          player_id: state.currentPlayer.id, match_id: parseInt(mid), score_a: p.score_a, score_b: p.score_b
+        }));
+        const res2 = await fetch(`${SUPABASE_URL}/functions/v1/submit-predictions`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_KEY}` },
-          body: JSON.stringify({ player_id: state.currentPlayer.id, pin, bracket })
+          body: JSON.stringify({ player_id: state.currentPlayer.id, pin, predictions, podium })
         });
         const d2 = await res2.json();
         if (!res2.ok) {
-          alert("Erro ao guardar fase final: " + (d2.error || res2.status));
-          setState({ submitting: false, bracketSubmitting: false });
+          alert("Erro ao guardar pódio: " + (d2.error || res2.status));
+          setState({ bracketSubmitting: false });
           return;
         }
       }
       await loadData();
-    } catch (e) { alert("Erro: " + e.message); setState({ submitting: false, bracketSubmitting: false }); }
+    } catch (e) { alert("Erro: " + e.message); setState({ bracketSubmitting: false }); }
   });
 }
 
@@ -842,9 +848,13 @@ function renderBracket() {
       : state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
           h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
         ) : null,
+    state.bracketStale ? h("div", { style: { background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "12px", padding: "12px 16px", marginBottom: "12px" } },
+      h("div", { style: { fontSize: "13px", fontWeight: 700, color: "#ef4444" } }, "⚠️ Prognósticos atualizados"),
+      h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.5)", marginTop: "4px" } }, "Alteraste os prognósticos de grupo após submeter a Fase Final. Verifica o quadro e resubmete.")
+    ) : null,
     !locked ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
-      h("button", { className: "submit-btn", onClick: submitAll, disabled: state.submitting || state.bracketSubmitting, style: (state.submitting || state.bracketSubmitting) ? { opacity: 0.6, cursor: "wait" } : {} },
-        (state.submitting || state.bracketSubmitting) ? "A submeter..." : hasBracket ? "Actualizar Prognósticos + Fase Final" : "Submeter Prognósticos + Fase Final")
+      h("button", { className: "submit-btn", onClick: submitBracket, disabled: state.bracketSubmitting, style: state.bracketSubmitting ? { opacity: 0.6, cursor: "wait" } : {} },
+        state.bracketSubmitting ? "A submeter..." : state.hasBracket ? "Actualizar Fase Final" : "Submeter Fase Final")
     ) : null
   );
 }
@@ -1147,14 +1157,32 @@ function renderPredictions() {
     h("p", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "16px" } },
       "A jogar como ", h("span", { style: { color: "#34d399", fontWeight: 700 } }, cp?.name || "")
     ),
-    // Podium — read-only, derived from bracket
+    // Podium — read-only, derived from bracket (locked until predictions submitted)
     h("div", { className: "podium-bar" },
       h("div", { className: "podium-card" },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
           h("div", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(251,191,36,0.8)", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Pódio Final"),
-          h("button", { onClick: () => setState({ view: "bracket" }), style: { background: "none", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "8px", color: "rgba(251,191,36,0.7)", fontSize: "11px", fontWeight: 600, padding: "3px 10px", cursor: "pointer", fontFamily: "inherit" } }, "Editar →")
+          state.submitted
+            ? h("button", { onClick: () => setState({ view: "bracket" }), style: { background: "none", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "8px", color: "rgba(251,191,36,0.7)", fontSize: "11px", fontWeight: 600, padding: "3px 10px", cursor: "pointer", fontFamily: "inherit" } }, state.hasBracket ? "Editar →" : "Criar →")
+            : null
         ),
-        hasPodium
+        !state.submitted
+          ? h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.3)", textAlign: "center", padding: "8px 0" } },
+              "Submete os prognósticos para desbloquear a Fase Final")
+          : state.bracketStale
+          ? h("div", null,
+              h("div", { style: { fontSize: "11px", color: "rgba(239,68,68,0.7)", fontWeight: 600, marginBottom: "8px" } }, "⚠️ Prognósticos alterados — resubmete a Fase Final"),
+              hasPodium
+                ? h("div", { style: { display: "flex", gap: "6px", opacity: 0.5 } },
+                    ...[0,1,2].map(i => h("div", { style: { flex: 1, textAlign: "center" } },
+                      h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.35)", marginBottom: "4px" } }, `${medals[i]} ${labels[i]}`),
+                      h("div", { style: { padding: "7px 4px", borderRadius: "8px", background: "rgba(255,255,255,0.06)", fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.4)" } },
+                        podiumTeams[i] || "—")
+                    ))
+                  )
+                : null
+            )
+          : hasPodium
           ? h("div", { style: { display: "flex", gap: "6px" } },
               ...[0,1,2].map(i => h("div", { style: { flex: 1, textAlign: "center" } },
                 h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.35)", marginBottom: "4px" } }, `${medals[i]} ${labels[i]}`),
@@ -1184,12 +1212,12 @@ function renderPredictions() {
           const inpA = document.createElement("input");
           inpA.type = "number"; inpA.min = "0"; inpA.max = "20"; inpA.value = pred.score_a;
           inpA.className = "pred-input"; inpA.disabled = locked;
-          inpA.addEventListener("change", () => { if (!locked) { const ep = { ...state.editPreds }; ep[m.id] = { ...ep[m.id], score_a: parseInt(inpA.value) || 0 }; state.editPreds = ep; } });
+          inpA.addEventListener("change", () => { if (!locked) { const ep = { ...state.editPreds }; ep[m.id] = { ...ep[m.id], score_a: parseInt(inpA.value) || 0 }; state.editPreds = ep; state.predictionsEdited = true; } });
 
           const inpB = document.createElement("input");
           inpB.type = "number"; inpB.min = "0"; inpB.max = "20"; inpB.value = pred.score_b;
           inpB.className = "pred-input"; inpB.disabled = locked;
-          inpB.addEventListener("change", () => { if (!locked) { const ep = { ...state.editPreds }; ep[m.id] = { ...ep[m.id], score_b: parseInt(inpB.value) || 0 }; state.editPreds = ep; } });
+          inpB.addEventListener("change", () => { if (!locked) { const ep = { ...state.editPreds }; ep[m.id] = { ...ep[m.id], score_b: parseInt(inpB.value) || 0 }; state.editPreds = ep; state.predictionsEdited = true; } });
 
           return h("div", { style: { padding: "10px 12px", borderRadius: "10px", background: ex ? "rgba(16,185,129,0.06)" : played ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.03)", border: `1px solid ${ex ? "rgba(16,185,129,0.15)" : played ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.06)"}`, marginBottom: "4px" } },
             h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "6px" } },
