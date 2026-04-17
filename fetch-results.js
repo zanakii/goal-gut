@@ -65,7 +65,7 @@ function translateTeam(name) {
 }
 
 // ─── Supabase helper ─────────────────────────────────────────────────
-async function supabaseUpdate(matchId, scoreA, scoreB) {
+async function supabaseUpdate(matchId, scoreA, scoreB, status = "finished") {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/matches?id=eq.${matchId}`, {
     method: "PATCH",
     headers: {
@@ -77,7 +77,7 @@ async function supabaseUpdate(matchId, scoreA, scoreB) {
     body: JSON.stringify({
       score_a: scoreA,
       score_b: scoreB,
-      status: "finished",
+      status,
       updated_at: new Date().toISOString()
     })
   });
@@ -137,6 +137,15 @@ async function main() {
     const scoreA = fixture.goals.home;
     const scoreB = fixture.goals.away;
 
+    // For penalty shootouts, encode the winner in the status field.
+    // fixture.goals stores the AET score (may be tied); penalty winner is separate.
+    let finalStatus = "finished";
+    if (status === "PEN") {
+      const penHome = fixture.score?.penalty?.home ?? 0;
+      const penAway = fixture.score?.penalty?.away ?? 0;
+      finalStatus = penHome > penAway ? "pen-home" : "pen-away";
+    }
+
     // Find the matching pending match in our DB
     const match = pending.find(m => m.team_a === homeTeam && m.team_b === awayTeam);
     if (!match) {
@@ -145,8 +154,8 @@ async function main() {
     }
 
     // Step 4: Update the score in Supabase
-    await supabaseUpdate(match.id, scoreA, scoreB);
-    console.log(`  ✓ Updated: ${homeTeam} ${scoreA}-${scoreB} ${awayTeam} (match ${match.id})`);
+    await supabaseUpdate(match.id, scoreA, scoreB, finalStatus);
+    console.log(`  ✓ Updated: ${homeTeam} ${scoreA}-${scoreB} ${awayTeam} [${finalStatus}] (match ${match.id})`);
     updated++;
   }
 
