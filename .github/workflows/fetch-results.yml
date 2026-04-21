@@ -17,8 +17,8 @@ on:
   schedule:
     # Every 10 min, 4PM-11PM UTC
     - cron: '*/10 16-23 * 6 *'
-    # Every 10 min, 12AM-6AM UTC
-    - cron: '*/10 0-5 * 6 *'
+    # Every 10 min, 12AM-7AM UTC (extra hour covers AET/penalties on late kickoffs)
+    - cron: '*/10 0-6 * 6 *'
   workflow_dispatch: # Manual trigger for testing
 
 jobs:
@@ -26,12 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Fetch results
         env:

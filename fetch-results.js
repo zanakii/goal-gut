@@ -37,35 +37,14 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY; // service_role key
 
 // ─── Team name mapping (api-football English → your Portuguese DB names) ───
-const TEAM_MAP = {
-  'Mexico': 'México', 'South Korea': 'Coreia do Sul', 'South Africa': 'África do Sul',
-  'Czech Republic': 'Rep. Checa', 'Czechia': 'Rep. Checa',
-  'Canada': 'Canadá', 'Switzerland': 'Suíça', 'Qatar': 'Qatar',
-  'Bosnia And Herzegovina': 'Bósnia-Herzegovina', 'Bosnia Herzegovina': 'Bósnia-Herzegovina',
-  'Brazil': 'Brasil', 'Morocco': 'Marrocos', 'Scotland': 'Escócia', 'Haiti': 'Haiti',
-  'USA': 'EUA', 'United States': 'EUA', 'Australia': 'Austrália',
-  'Paraguay': 'Paraguai', 'Turkey': 'Turquia', 'Turkiye': 'Turquia',
-  'Germany': 'Alemanha', 'Ecuador': 'Equador',
-  'Ivory Coast': 'Costa do Marfim', 'Cote D Ivoire': 'Costa do Marfim', "Côte d'Ivoire": 'Costa do Marfim',
-  'Curacao': 'Curaçau', 'Curaçao': 'Curaçau',
-  'Netherlands': 'Países Baixos', 'Japan': 'Japão', 'Tunisia': 'Tunísia',
-  'Sweden': 'Suécia',
-  'Belgium': 'Bélgica', 'Iran': 'Irão', 'Egypt': 'Egito', 'New Zealand': 'Nova Zelândia',
-  'Spain': 'Espanha', 'Uruguay': 'Uruguai', 'Saudi Arabia': 'Arábia Saudita',
-  'Cape Verde': 'Cabo Verde', 'Cabo Verde': 'Cabo Verde',
-  'France': 'França', 'Senegal': 'Senegal', 'Norway': 'Noruega', 'Iraq': 'Iraque',
-  'Argentina': 'Argentina', 'Austria': 'Áustria', 'Algeria': 'Argélia', 'Jordan': 'Jordânia',
-  'Portugal': 'Portugal', 'Colombia': 'Colômbia', 'Uzbekistan': 'Uzbequistão',
-  'DR Congo': 'RD Congo', 'Congo DR': 'RD Congo',
-  'England': 'Inglaterra', 'Croatia': 'Croácia', 'Panama': 'Panamá', 'Ghana': 'Gana',
-};
+const TEAM_MAP = require('./team-map');
 
 function translateTeam(name) {
   return TEAM_MAP[name] || name;
 }
 
 // ─── Supabase helper ─────────────────────────────────────────────────
-async function supabaseUpdate(matchId, scoreA, scoreB) {
+async function supabaseUpdate(matchId, scoreA, scoreB, status = "finished") {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/matches?id=eq.${matchId}`, {
     method: "PATCH",
     headers: {
@@ -77,7 +56,7 @@ async function supabaseUpdate(matchId, scoreA, scoreB) {
     body: JSON.stringify({
       score_a: scoreA,
       score_b: scoreB,
-      status: "finished",
+      status,
       updated_at: new Date().toISOString()
     })
   });
@@ -137,6 +116,15 @@ async function main() {
     const scoreA = fixture.goals.home;
     const scoreB = fixture.goals.away;
 
+    // For penalty shootouts, encode the winner in the status field.
+    // fixture.goals stores the AET score (may be tied); penalty winner is separate.
+    let finalStatus = "finished";
+    if (status === "PEN") {
+      const penHome = fixture.score?.penalty?.home ?? 0;
+      const penAway = fixture.score?.penalty?.away ?? 0;
+      finalStatus = penHome > penAway ? "pen-home" : "pen-away";
+    }
+
     // Find the matching pending match in our DB
     const match = pending.find(m => m.team_a === homeTeam && m.team_b === awayTeam);
     if (!match) {
@@ -145,8 +133,8 @@ async function main() {
     }
 
     // Step 4: Update the score in Supabase
-    await supabaseUpdate(match.id, scoreA, scoreB);
-    console.log(`  ✓ Updated: ${homeTeam} ${scoreA}-${scoreB} ${awayTeam} (match ${match.id})`);
+    await supabaseUpdate(match.id, scoreA, scoreB, finalStatus);
+    console.log(`  ✓ Updated: ${homeTeam} ${scoreA}-${scoreB} ${awayTeam} [${finalStatus}] (match ${match.id})`);
     updated++;
   }
 
