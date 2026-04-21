@@ -294,7 +294,8 @@ let state = {
   deadline: null, deadlinePassed: false, actualPodium: null,
   showPinModal: false, pinValue: "", pinError: false, pinCallback: null,
   editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false,
-  hasBracket: false, bracketStale: false, predictionsEdited: false
+  hasBracket: false, bracketStale: false, predictionsEdited: false,
+  submittedAt: null
 };
 
 function setState(partial) { Object.assign(state, partial); render(); }
@@ -361,7 +362,8 @@ async function loadData(silent = false) {
       tiebreaks: {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
       deadline, deadlinePassed, actualPodium,
-      hasBracket: !!podMap[cp?.id], bracketStale: false, predictionsEdited: false
+      hasBracket: !!podMap[cp?.id], bracketStale: false, predictionsEdited: false,
+      submittedAt: Object.keys(myPreds).length > 0 ? (state.submittedAt || new Date(0)) : null
     });
   } catch (e) { setState({ error: e.message, loading: false }); }
 }
@@ -377,7 +379,8 @@ function switchPlayer(p) {
     editBracket: state.allBrackets[p.id] || {},
     tiebreaks: {},
     submitted: Object.keys(myPreds).length > 0,
-    hasBracket: !!state.allPodiums[p.id], bracketStale: false, predictionsEdited: false
+    hasBracket: !!state.allPodiums[p.id], bracketStale: false, predictionsEdited: false,
+    submittedAt: null
   });
 }
 
@@ -407,6 +410,7 @@ async function submitPredictions() {
       }
       await loadData(true);
       state.submitting = false;
+      state.submittedAt = new Date();
       if (hadBracket) { state.bracketStale = true; }
       render();
     } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
@@ -1236,12 +1240,47 @@ function renderLeaderboard() {
 function generateTemplate() {
   const sorted = [...state.matches].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
   const rows = [["Grupo", "Data", "Equipa A", "Marcador A", "Marcador B", "Equipa B", "id"]];
-  sorted.forEach(m => rows.push([m.group_letter, fmtDate(m.kickoff), m.team_a, "", "", m.team_b, m.id]));
+  sorted.forEach(m => {
+    const pred = state.editPreds[m.id];
+    const sa = pred?.score_a ?? "";
+    const sb = pred?.score_b ?? "";
+    rows.push([m.group_letter, fmtDate(m.kickoff), m.team_a, sa, sb, m.team_b, m.id]);
+  });
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws["!cols"] = [{ wch: 6 }, { wch: 16 }, { wch: 18 }, { wch: 11 }, { wch: 11 }, { wch: 18 }, { wch: 10 }];
+  ws["!cols"] = [{ wch: 6 }, { wch: 16 }, { wch: 18 }, { wch: 11 }, { wch: 11 }, { wch: 18 }, { hidden: true }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Prognósticos");
   XLSX.writeFile(wb, `prognosticos_${(state.currentPlayer?.name || "template").replace(/\s+/g, "_")}.xlsx`);
+}
+
+function generateReceipt() {
+  const sorted = [...state.matches].sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+  const submittedLabel = state.submittedAt && state.submittedAt.getTime() > 0
+    ? fmtDate(state.submittedAt.toISOString()) + " " + fmtTime(state.submittedAt.toISOString())
+    : "Data desconhecida";
+
+  const meta = [[`Recibo de Prognósticos — ${state.currentPlayer?.name || ""} — Submetido em ${submittedLabel}`]];
+  const header = [["Grupo", "Data", "Equipa A", "Marcador A", "Marcador B", "Equipa B", "id"]];
+  const dataRows = sorted.map(m => {
+    const pred = state.editPreds[m.id];
+    return [m.group_letter, fmtDate(m.kickoff), m.team_a, pred?.score_a ?? "", pred?.score_b ?? "", m.team_b, m.id];
+  });
+  const ws1 = XLSX.utils.aoa_to_sheet([...meta, ...header, ...dataRows]);
+  ws1["!cols"] = [{ wch: 6 }, { wch: 16 }, { wch: 18 }, { wch: 11 }, { wch: 11 }, { wch: 18 }, { hidden: true }];
+
+  const [fp, sp, tp] = derivePodiumFromBracket(state.editBracket);
+  const podiumRows = state.hasBracket && (fp || sp || tp)
+    ? [["Posição", "Equipa"], ["Campeão", fp || "—"], ["2º Lugar", sp || "—"], ["3º Lugar", tp || "—"]]
+    : [["⚠ Fase Final não submetida — acede ao separador Fase Final para completar o pódio."]];
+  const ws2 = XLSX.utils.aoa_to_sheet(podiumRows);
+  ws2["!cols"] = [{ wch: 12 }, { wch: 20 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, "Prognósticos");
+  XLSX.utils.book_append_sheet(wb, ws2, "Pódio");
+
+  const dateStr = (state.submittedAt || new Date()).toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `recibo_${(state.currentPlayer?.name || "jogador").replace(/\s+/g, "_")}_${dateStr}.xlsx`);
 }
 
 function importExcel(file) {
@@ -1295,6 +1334,7 @@ function renderPredictions() {
     // Excel import/export
     h("div", { style: { display: "flex", gap: "8px", marginBottom: state.importMsg ? "8px" : "16px" } },
       h("button", { onClick: generateTemplate, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Template Excel"),
+      state.submitted ? h("button", { onClick: generateReceipt, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Recibo") : null,
       h("label", { style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "center", display: "block" } },
         "⬆ Importar Excel",
         h("input", { type: "file", accept: ".xlsx", style: { display: "none" }, onChange: (e) => { if (e.target.files[0]) { importExcel(e.target.files[0]); e.target.value = ""; } } })
