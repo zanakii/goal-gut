@@ -772,7 +772,7 @@ function renderBracket() {
   const hasBracket = Object.values(state.editBracket).some(t => t);
   const locked = state.deadlinePassed;
 
-  const backBtn = h("button", { onClick: () => setState({ view: "matches" }), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Jogos");
+  const backBtn = h("button", { onClick: () => navigateTo("matches"), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Jogos");
 
   if (!state.submitted) {
     return h("div", { className: "content" },
@@ -895,6 +895,13 @@ function renderBracket() {
   );
 }
 
+function navigateTo(newView) {
+  if (state.predictionsEdited && !state.deadlinePassed && state.view === "predictions") {
+    if (!confirm("Tens prognósticos por submeter. Se saíres agora, as alterações serão perdidas. Continuar?")) return;
+  }
+  setState({ view: newView });
+}
+
 // ─── RENDER ──────────────────────────────────────────────────────────
 function h(tag, attrs, ...children) {
   const el = document.createElement(tag);
@@ -947,7 +954,7 @@ function renderNav() {
   ];
   const activeId = state.view === "bracket" ? "matches" : state.view;
   return h("nav", { className: "nav" },
-    ...tabs.map(t => h("button", { className: activeId === t.id ? "active" : "", onClick: () => setState({ view: t.id }) },
+    ...tabs.map(t => h("button", { className: activeId === t.id ? "active" : "", onClick: () => navigateTo(t.id) },
       h("span", { style: { fontSize: "16px" } }, t.icon), t.label
     ))
   );
@@ -1414,6 +1421,12 @@ function render() {
 }
 
 // ─── INIT ────────────────────────────────────────────────────────────
+window.addEventListener("beforeunload", (e) => {
+  if (state.predictionsEdited && !state.deadlinePassed) {
+    e.preventDefault();
+    e.returnValue = "Tens prognósticos por submeter.";
+  }
+});
 loadData();
 </script>
 </body>
