@@ -315,7 +315,10 @@ let state = {
   editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false,
   hasBracket: false, bracketStale: false, predictionsEdited: false,
   submittedAt: null,
-  viewerPlayerId: null, authenticated: false, identityModalOpen: false, viewerPin: null
+  viewerPlayerId: null, authenticated: false, identityModalOpen: false, viewerPin: null,
+  showChangePinModal: false, changePinValues: { current: "", next: "", confirm: "" },
+  changePinError: null, changePinSubmitting: false, changePinSuccess: false,
+  showChangePinPrompt: false
 };
 
 function setState(partial) { Object.assign(state, partial); render(); }
@@ -446,6 +449,7 @@ function requestBootPin(player, showError = false) {
         state.viewerPin = pin;
         state.authenticated = true;
         state.bootPinPlayerName = null;
+        if (!localStorage.getItem(`goalgut_pin_set_${player.id}`)) state.showChangePinPrompt = true;
         await loadData(true);
       } catch (e) {
         if (e.message === "invalid_pin") requestBootPin(player, true);
@@ -869,7 +873,7 @@ function renderBracket() {
   const hasBracket = Object.values(state.editBracket).some(t => t);
   const locked = state.deadlinePassed;
 
-  const backBtn = h("button", { onClick: () => navigateTo("matches"), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Jogos");
+  const backBtn = h("button", { onClick: () => navigateTo("predictions"), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Prognósticos");
 
   if (!state.submitted) {
     return h("div", { className: "content" },
@@ -1071,8 +1075,12 @@ function renderHeader() {
       ),
       state.dropdownOpen ? h("div", { className: "player-dropdown" },
         ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, p.name)),
+        state.viewerPlayerId && !state.deadlinePassed ? h("button", {
+          style: { borderTop: "1px solid rgba(255,255,255,0.08)" },
+          onClick: () => setState({ dropdownOpen: false, showChangePinModal: true, changePinValues: { current: "", next: "", confirm: "" }, changePinError: null })
+        }, "🔑 Alterar PIN") : null,
         !state.deadlinePassed ? h("button", {
-          style: { color: "rgba(255,140,100,0.8)", borderTop: "1px solid rgba(255,255,255,0.08)" },
+          style: { color: "rgba(255,140,100,0.8)", borderTop: state.viewerPlayerId ? "none" : "1px solid rgba(255,255,255,0.08)" },
           onClick: () => {
             localStorage.removeItem('goalgut_player_id');
             setState({ viewerPlayerId: null, viewerPin: null, authenticated: false, dropdownOpen: false,
@@ -1553,6 +1561,92 @@ function renderPredictions() {
   );
 }
 
+async function submitChangePin() {
+  if (state.changePinSubmitting) return;
+  const { current, next, confirm } = state.changePinValues;
+  if (!current || !next || !confirm) { setState({ changePinError: 'missing' }); return; }
+  if (next !== confirm) { setState({ changePinError: 'mismatch' }); return; }
+  if (next === current) { setState({ changePinError: 'same' }); return; }
+  if (next.length < 4) { setState({ changePinError: 'too_short' }); return; }
+  setState({ changePinSubmitting: true, changePinError: null });
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/change-pin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_KEY}` },
+      body: JSON.stringify({ player_id: state.viewerPlayerId, current_pin: current, new_pin: next })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setState({ changePinError: res.status === 401 ? 'wrong_current' : null, changePinSubmitting: false });
+      if (res.status !== 401) alert("Erro: " + (data.error || res.status));
+      return;
+    }
+    localStorage.setItem(`goalgut_pin_set_${state.viewerPlayerId}`, "1");
+    state.viewerPin = next;
+    setState({ showChangePinModal: false, changePinSubmitting: false, changePinError: null,
+      changePinValues: { current: "", next: "", confirm: "" }, changePinSuccess: true });
+    setTimeout(() => { state.changePinSuccess = false; render(); }, 3000);
+  } catch (e) {
+    setState({ changePinSubmitting: false });
+    alert("Erro: " + e.message);
+  }
+}
+
+function renderChangePinPrompt() {
+  if (!state.showChangePinPrompt) return null;
+  return h("div", { className: "pin-overlay" },
+    h("div", { className: "pin-modal" },
+      h("div", { style: { fontSize: "32px", marginBottom: "8px" } }, "💡"),
+      h("div", { style: { fontSize: "15px", fontWeight: 700, color: "#fff", marginBottom: "4px" } }, "Alterar PIN?"),
+      h("div", { style: { fontSize: "13px", color: "rgba(255,255,255,0.55)", marginBottom: "20px", lineHeight: "1.5" } },
+        "Queres definir um PIN mais fácil de memorizar?"),
+      h("button", { className: "pin-btn", onClick: () => setState({ showChangePinPrompt: false, showChangePinModal: true, changePinValues: { current: "", next: "", confirm: "" }, changePinError: null }) }, "Sim, alterar"),
+      h("button", { className: "pin-cancel", onClick: () => setState({ showChangePinPrompt: false }) }, "Agora não")
+    )
+  );
+}
+
+function renderChangePinModal() {
+  if (!state.showChangePinModal) return null;
+  const player = state.players.find(p => p.id === state.viewerPlayerId);
+  const errMsgs = { missing: "Preenche todos os campos", wrong_current: "PIN atual incorrecto", mismatch: "Os PINs não coincidem", too_short: "O novo PIN deve ter pelo menos 4 caracteres", same: "O novo PIN é igual ao atual" };
+
+  const makeInp = (field, placeholder, highlight) => {
+    const inp = document.createElement("input");
+    inp.type = "password"; inp.maxLength = 30; inp.placeholder = placeholder;
+    inp.value = state.changePinValues[field];
+    inp.style.cssText = `display:block;width:100%;box-sizing:border-box;padding:10px 14px;border-radius:10px;background:rgba(255,255,255,0.06);color:#fff;border:1px solid ${highlight ? '#ef4444' : 'rgba(255,255,255,0.12)'};font-size:14px;font-family:inherit;outline:none;margin-bottom:8px;`;
+    inp.addEventListener("input", (e) => { state.changePinValues = { ...state.changePinValues, [field]: e.target.value }; state.changePinError = null; });
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submitChangePin(); });
+    return inp;
+  };
+
+  const err = state.changePinError;
+  const inpCurrent = makeInp('current', 'PIN atual', err === 'wrong_current' || err === 'missing');
+  const inpNext    = makeInp('next',    'Novo PIN',  err === 'mismatch' || err === 'too_short' || err === 'same' || err === 'missing');
+  const inpConfirm = makeInp('confirm', 'Confirmar novo PIN', err === 'mismatch' || err === 'missing');
+
+  setTimeout(() => {
+    if (!state.changePinValues.current) inpCurrent.focus();
+    else if (!state.changePinValues.next) inpNext.focus();
+    else inpConfirm.focus();
+  }, 50);
+
+  return h("div", { className: "pin-overlay" },
+    h("div", { className: "pin-modal" },
+      h("div", { style: { fontSize: "32px", marginBottom: "8px" } }, "🔑"),
+      h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#fff", marginBottom: "2px" } }, "Alterar PIN"),
+      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "16px" } },
+        "A alterar PIN de ", h("span", { style: { color: "#34d399", fontWeight: 700 } }, player?.name || "")),
+      inpCurrent, inpNext, inpConfirm,
+      err ? h("div", { style: { fontSize: "12px", color: "#ef4444", fontWeight: 600, marginBottom: "8px", textAlign: "left" } }, errMsgs[err] || "Erro") : null,
+      h("button", { className: "pin-btn", disabled: state.changePinSubmitting, onClick: submitChangePin, style: state.changePinSubmitting ? { opacity: 0.6, cursor: "wait" } : {} },
+        state.changePinSubmitting ? "A guardar..." : "Confirmar"),
+      h("button", { className: "pin-cancel", onClick: () => setState({ showChangePinModal: false, changePinError: null, changePinValues: { current: "", next: "", confirm: "" } }) }, "Cancelar")
+    )
+  );
+}
+
 function renderIdentityModal() {
   if (!state.identityModalOpen) return null;
   return h("div", { className: "pin-overlay" },
@@ -1634,6 +1728,17 @@ function render() {
   if (identityModal) app.appendChild(identityModal);
   const pinModal = renderPinModal();
   if (pinModal) app.appendChild(pinModal);
+
+  // Change PIN modals
+  const changePinPrompt = renderChangePinPrompt();
+  if (changePinPrompt) app.appendChild(changePinPrompt);
+  const changePinModal = renderChangePinModal();
+  if (changePinModal) app.appendChild(changePinModal);
+
+  // Success toast
+  if (state.changePinSuccess) {
+    app.appendChild(h("div", { style: { position: "fixed", bottom: "90px", left: "50%", transform: "translateX(-50%)", background: "#34d399", color: "#0f172a", fontWeight: 700, fontSize: "13px", borderRadius: "20px", padding: "10px 20px", zIndex: 300, animation: "fadeIn 0.2s ease", whiteSpace: "nowrap" } }, "PIN alterado com sucesso"));
+  }
 
   // Standings modal overlay
   const standingsModal = renderStandingsModal();
