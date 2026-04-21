@@ -101,6 +101,9 @@
   .bracket-match--picked { border-color: rgba(52,211,153,0.2); background: rgba(52,211,153,0.04); }
   .bracket-select { flex: 1; padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 12px; font-weight: 600; font-family: inherit; outline: none; cursor: pointer; }
   .bracket-select:disabled { opacity: 0.4; cursor: not-allowed; }
+  .bracket-pill { flex: 1; padding: 8px 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #fff; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit; text-align: center; transition: background 0.15s, color 0.15s; }
+  .bracket-pill--picked { background: #34d399; color: #0f172a; border-color: #34d399; }
+  .bracket-pill:not(.bracket-pill--picked):hover { background: rgba(255,255,255,0.1); }
 
   /* Standings modal */
   .standings-modal { background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 20px; width: calc(100% - 32px); max-width: 440px; max-height: 82vh; overflow-y: auto; animation: fadeIn 0.2s ease; }
@@ -710,6 +713,25 @@ function resolveTeam(desc, editBracket, standings, best3rds, r32Slot) {
   return { team: winner || null, label: fallback };
 }
 
+function clearDownstream(editBracket, round, slot) {
+  const cleared = { ...editBracket };
+  const queue = [[round, slot]];
+  while (queue.length > 0) {
+    const [r, s] = queue.shift();
+    BRACKET_STRUCTURE.forEach(roundDef => {
+      roundDef.matches.forEach(match => {
+        const depends = (match.a?.from === r && match.a?.slot === s)
+                     || (match.b?.from === r && match.b?.slot === s);
+        if (depends) {
+          const k = `${roundDef.id}-${match.slot}`;
+          if (cleared[k]) { delete cleared[k]; queue.push([roundDef.id, match.slot]); }
+        }
+      });
+    });
+  }
+  return cleared;
+}
+
 async function submitBracket() {
   if (state.bracketSubmitting) return;
   if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
@@ -840,18 +862,47 @@ function renderBracket() {
           const { team: teamA, label: labelA } = resolveTeam(match.a, state.editBracket, standings, best3rdsAssignment, match.slot);
           const { team: teamB, label: labelB } = resolveTeam(match.b, state.editBracket, standings, best3rdsAssignment, match.slot);
           const bothKnown = !!(teamA && teamB);
-          const options = bothKnown ? [teamA, teamB] : allTeams;
 
+          if (bothKnown && !locked) {
+            return h("div", { className: `bracket-match${picked ? " bracket-match--picked" : ""}` },
+              h("div", { style: { display: "flex", gap: "6px" } },
+                ...[{ team: teamA }, { team: teamB }].map(({ team }) =>
+                  h("button", {
+                    className: `bracket-pill${picked === team ? " bracket-pill--picked" : ""}`,
+                    onClick: () => {
+                      if (picked === team) return;
+                      let eb = { ...state.editBracket, [key]: team };
+                      if (picked) eb = clearDownstream(eb, round.id, match.slot);
+                      state.editBracket = eb;
+                      render();
+                    }
+                  }, teamWithFlag(team))
+                )
+              )
+            );
+          }
+
+          if (!bothKnown && !locked) {
+            return h("div", { className: "bracket-match" },
+              h("div", { style: { display: "flex", gap: "6px", marginBottom: "8px" } },
+                ...[labelA, labelB].map(label =>
+                  h("span", { className: "bracket-pill", style: { opacity: 0.35, cursor: "default", flex: 1, textAlign: "center" } }, label)
+                )
+              ),
+              h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", textAlign: "center" } },
+                "A aguardar definição — resolve os grupos ou seleciona vencedores anteriores"
+              )
+            );
+          }
+
+          // locked: read-only select
           const sel = document.createElement("select");
           sel.className = "bracket-select";
-          sel.disabled = locked;
+          sel.disabled = true;
           const def = document.createElement("option"); def.value = ""; def.textContent = "— Vencedor —"; def.style.background = "#1e293b";
           sel.appendChild(def);
-          options.forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = teamWithFlag(t); o.style.background = "#1e293b"; sel.appendChild(o); });
+          (bothKnown ? [teamA, teamB] : allTeams).forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = teamWithFlag(t); o.style.background = "#1e293b"; sel.appendChild(o); });
           sel.value = picked;
-          sel.addEventListener("change", () => {
-            if (!locked) { const eb = { ...state.editBracket }; eb[key] = sel.value; state.editBracket = eb; render(); }
-          });
 
           return h("div", { className: `bracket-match${picked ? " bracket-match--picked" : ""}` },
             h("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" } },
@@ -952,7 +1003,7 @@ function renderNav() {
     { id: "leaderboard", label: "Classificação", icon: "📊" },
     { id: "predictions", label: "Prognósticos", icon: "✏️" },
   ];
-  const activeId = state.view === "bracket" ? "matches" : state.view;
+  const activeId = state.view === "bracket" ? "predictions" : state.view;
   return h("nav", { className: "nav" },
     ...tabs.map(t => h("button", { className: activeId === t.id ? "active" : "", onClick: () => navigateTo(t.id) },
       h("span", { style: { fontSize: "16px" } }, t.icon), t.label
