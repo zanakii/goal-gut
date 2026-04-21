@@ -314,8 +314,9 @@ function cancelPin() {
 }
 
 // ─── DATA LOADING ────────────────────────────────────────────────────
-async function loadData() {
-  setState({ loading: true, error: null });
+async function loadData(silent = false) {
+  if (!silent) setState({ loading: true, error: null });
+  else setState({ error: null });
   try {
     const [players, matches, preds, podiums, brackets, config] = await Promise.all([
       sbGet("players", "select=id,name,short_name&order=name"),
@@ -401,8 +402,10 @@ async function submitPredictions() {
         setState({ submitting: false });
         return;
       }
-      await loadData();
-      if (hadBracket) { state.bracketStale = true; render(); }
+      await loadData(true);
+      state.submitting = false;
+      if (hadBracket) { state.bracketStale = true; }
+      render();
     } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
   });
 }
@@ -733,7 +736,9 @@ async function submitBracket() {
           return;
         }
       }
-      await loadData();
+      await loadData(true);
+      state.bracketSubmitting = false;
+      render();
     } catch (e) { alert("Erro: " + e.message); setState({ bracketSubmitting: false }); }
   });
 }
