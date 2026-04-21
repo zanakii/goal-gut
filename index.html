@@ -609,12 +609,28 @@ const THIRD_SLOT_GROUPS = {
 };
 
 function assignBest3rdsToSlots(best3rds) {
+  const slots = Object.keys(THIRD_SLOT_GROUPS)
+    .map(Number)
+    .sort((a, b) => THIRD_SLOT_GROUPS[a].length - THIRD_SLOT_GROUPS[b].length);
   const result = {};
-  const used = new Set();
-  for (const [slot, groups] of Object.entries(THIRD_SLOT_GROUPS)) {
-    const candidate = best3rds.find(t => groups.includes(t.group) && !used.has(t.team));
-    if (candidate) { result[slot] = candidate.team; used.add(candidate.team); }
+
+  function backtrack(slotIdx, used) {
+    if (slotIdx === slots.length) return true;
+    const slot = slots[slotIdx];
+    const eligible = THIRD_SLOT_GROUPS[slot];
+    for (const candidate of best3rds) {
+      if (!used.has(candidate.team) && eligible.includes(candidate.group)) {
+        result[slot] = candidate.team;
+        used.add(candidate.team);
+        if (backtrack(slotIdx + 1, used)) return true;
+        delete result[slot];
+        used.delete(candidate.team);
+      }
+    }
+    return false;
   }
+
+  backtrack(0, new Set());
   return result;
 }
 
