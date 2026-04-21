@@ -143,6 +143,17 @@ async function sbPost(table, data) {
   if (!r.ok) { const e = await r.text(); throw new Error(`POST ${table}: ${r.status} ${e}`); }
 }
 
+async function callGetPredictions(player_id, pin) {
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/get-predictions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+    body: JSON.stringify({ player_id, pin })
+  });
+  if (r.status === 401) throw new Error("invalid_pin");
+  if (!r.ok) throw new Error("Erro ao obter prognósticos");
+  return r.json();
+}
+
 // ─── SCORING ─────────────────────────────────────────────────────────
 function calcPts(pred, m) {
   if (!pred || m.score_a === null || m.score_b === null) return null;
@@ -299,10 +310,12 @@ let state = {
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
   expanded: {}, dropdownOpen: false, loading: true, error: null,
   deadline: null, deadlinePassed: false, actualPodium: null,
-  showPinModal: false, pinValue: "", pinError: false, pinCallback: null,
+  showPinModal: false, pinValue: "", pinError: false, pinCallback: null, pinCancelCallback: null,
+  bootPinPlayerName: null,
   editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false,
   hasBracket: false, bracketStale: false, predictionsEdited: false,
-  submittedAt: null
+  submittedAt: null,
+  viewerPlayerId: null, authenticated: false, identityModalOpen: false, viewerPin: null
 };
 
 function setState(partial) { Object.assign(state, partial); render(); }
@@ -321,7 +334,9 @@ function verifyPin() {
 }
 
 function cancelPin() {
-  setState({ showPinModal: false, pinValue: "", pinError: false, pinCallback: null });
+  const cb = state.pinCancelCallback;
+  setState({ showPinModal: false, pinValue: "", pinError: false, pinCallback: null, pinCancelCallback: null, bootPinPlayerName: null });
+  if (cb) cb();
 }
 
 // ─── DATA LOADING ────────────────────────────────────────────────────
@@ -329,38 +344,51 @@ async function loadData(silent = false) {
   if (!silent) setState({ loading: true, error: null });
   else setState({ error: null });
   try {
-    const [players, matches, preds, podiums, brackets, config] = await Promise.all([
+    const [players, matches, config] = await Promise.all([
       sbGet("players", "select=id,name,short_name&order=name"),
       sbGet("matches", "order=kickoff"),
-      sbGet("predictions", "select=*"),
-      sbGet("podium_predictions", "select=*"),
-      sbGet("bracket_predictions", "select=*"),
       sbGet("tournament_config", "key=in.(submission_deadline,actual_podium)")
     ]);
+
+    // Parse deadline
+    let deadline = null, deadlinePassed = false;
+    const deadlineCfg = config.find(c => c.key === 'submission_deadline');
+    if (deadlineCfg) { deadline = new Date(deadlineCfg.value); deadlinePassed = new Date() > deadline; }
+    let actualPodium = null;
+    const podiumCfg = config.find(c => c.key === 'actual_podium');
+    if (podiumCfg) { try { actualPodium = JSON.parse(podiumCfg.value); } catch (_) {} }
+
+    let preds = [], podiums = [], brackets = [];
+    if (deadlinePassed) {
+      // Post-deadline: fetch all directly, no auth needed
+      [preds, podiums, brackets] = await Promise.all([
+        sbGet("predictions", "select=*"),
+        sbGet("podium_predictions", "select=*"),
+        sbGet("bracket_predictions", "select=*")
+      ]);
+    } else if (state.viewerPlayerId && state.viewerPin) {
+      // Pre-deadline, already authenticated: re-fetch own data via edge function
+      const data = await callGetPredictions(state.viewerPlayerId, state.viewerPin);
+      preds = data.predictions; podiums = data.podiums; brackets = data.brackets;
+    }
+    // else: pre-deadline, not yet authenticated — preds/podiums/brackets stay empty; identity flow triggered below
+
     const predMap = {};
     preds.forEach(p => { if (!predMap[p.player_id]) predMap[p.player_id] = {}; predMap[p.player_id][p.match_id] = p; });
     const podMap = {};
     podiums.forEach(p => { podMap[p.player_id] = p; });
     const bracketMap = {};
     brackets.forEach(b => { if (!bracketMap[b.player_id]) bracketMap[b.player_id] = {}; bracketMap[b.player_id][`${b.round}-${b.slot}`] = b.picked_team; });
-    const cp = state.currentPlayer || players[0] || null;
+
+    // Pre-deadline: currentPlayer is always the PIN-verified viewer
+    const cp = (!deadlinePassed && state.viewerPlayerId)
+      ? (players.find(p => p.id === state.viewerPlayerId) || players[0] || null)
+      : (state.currentPlayer || players[0] || null);
+
     const myPreds = predMap[cp?.id] || {};
     const myPodium = podMap[cp?.id];
     const editPreds = {};
     matches.forEach(m => { editPreds[m.id] = myPreds[m.id] ? { score_a: myPreds[m.id].score_a, score_b: myPreds[m.id].score_b } : { score_a: 0, score_b: 0 }; });
-    
-    // Parse deadline
-    let deadline = null;
-    let deadlinePassed = false;
-    const deadlineCfg = config.find(c => c.key === 'submission_deadline');
-    if (deadlineCfg) {
-      deadline = new Date(deadlineCfg.value);
-      deadlinePassed = new Date() > deadline;
-    }
-    // Parse actual podium (set by admin after tournament ends)
-    let actualPodium = null;
-    const podiumCfg = config.find(c => c.key === 'actual_podium');
-    if (podiumCfg) { try { actualPodium = JSON.parse(podiumCfg.value); } catch (e) {} }
 
     setState({
       players, matches, allPreds: predMap, allPodiums: podMap, allBrackets: bracketMap, currentPlayer: cp,
@@ -369,9 +397,13 @@ async function loadData(silent = false) {
       tiebreaks: {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
       deadline, deadlinePassed, actualPodium,
+      authenticated: deadlinePassed || state.authenticated,
       hasBracket: !!podMap[cp?.id], bracketStale: false, predictionsEdited: false,
       submittedAt: Object.keys(myPreds).length > 0 ? (state.submittedAt || new Date(0)) : null
     });
+
+    // Show identity flow if pre-deadline and not yet authenticated
+    if (!deadlinePassed && !state.viewerPlayerId) initiateIdentityFlow();
   } catch (e) { setState({ error: e.message, loading: false }); }
 }
 
@@ -388,6 +420,38 @@ function switchPlayer(p) {
     submitted: Object.keys(myPreds).length > 0,
     hasBracket: !!state.allPodiums[p.id], bracketStale: false, predictionsEdited: false,
     submittedAt: null
+  });
+}
+
+function initiateIdentityFlow() {
+  const storedId = localStorage.getItem('goalgut_player_id');
+  if (storedId) {
+    const player = state.players.find(p => p.id === parseInt(storedId));
+    if (player) { requestBootPin(player); return; }
+    localStorage.removeItem('goalgut_player_id');
+  }
+  setState({ identityModalOpen: true });
+}
+
+function requestBootPin(player, showError = false) {
+  setState({
+    showPinModal: true, pinValue: "", pinError: showError,
+    bootPinPlayerName: player.name,
+    pinCancelCallback: () => setState({ identityModalOpen: true }),
+    pinCallback: async (pin) => {
+      try {
+        await callGetPredictions(player.id, pin); // verify only; loadData will re-fetch
+        localStorage.setItem('goalgut_player_id', String(player.id));
+        state.viewerPlayerId = player.id;
+        state.viewerPin = pin;
+        state.authenticated = true;
+        state.bootPinPlayerName = null;
+        await loadData(true);
+      } catch (e) {
+        if (e.message === "invalid_pin") requestBootPin(player, true);
+        else alert("Erro: " + e.message);
+      }
+    }
   });
 }
 
@@ -961,6 +1025,10 @@ function navigateTo(newView) {
   if (state.predictionsEdited && !state.deadlinePassed && state.view === "predictions") {
     if (!confirm("Tens prognósticos por submeter. Se saíres agora, as alterações serão perdidas. Continuar?")) return;
   }
+  if (!state.deadlinePassed && !state.authenticated && (newView === "predictions" || newView === "bracket")) {
+    setState({ identityModalOpen: true });
+    return;
+  }
   setState({ view: newView });
 }
 
@@ -1002,7 +1070,15 @@ function renderHeader() {
         (cp?.name?.split(" ")[0] || "Jogador") + " ▾"
       ),
       state.dropdownOpen ? h("div", { className: "player-dropdown" },
-        ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, p.name))
+        ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, p.name)),
+        !state.deadlinePassed ? h("button", {
+          style: { color: "rgba(255,140,100,0.8)", borderTop: "1px solid rgba(255,255,255,0.08)" },
+          onClick: () => {
+            localStorage.removeItem('goalgut_player_id');
+            setState({ viewerPlayerId: null, viewerPin: null, authenticated: false, dropdownOpen: false,
+              allPreds: {}, allPodiums: {}, allBrackets: {}, identityModalOpen: true });
+          }
+        }, "↩ Trocar jogador") : null
       ) : null
     )
   );
@@ -1141,17 +1217,26 @@ function renderMatchDetail() {
         h("div", { style: { flex: 1, textAlign: "left", fontSize: "16px", fontWeight: 800 } }, teamWithFlag(m.team_b))
       )
     ),
-    h("h3", { style: { fontSize: "15px", fontWeight: 700, marginBottom: "10px" } }, "Prognósticos"),
-    ...playerData.map((p, i) => h("div", { style: { display: "flex", alignItems: "center", padding: "10px 12px", borderRadius: "10px", background: p.exact ? "rgba(16,185,129,0.08)" : "rgba(255,255,255,0.03)", border: `1px solid ${p.exact ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.05)"}`, gap: "10px", marginBottom: "4px" } },
-      h("div", { style: { width: "20px", fontSize: "12px", fontWeight: 700, color: "rgba(255,255,255,0.25)", textAlign: "center" } }, String(i + 1)),
-      h("div", { style: { flex: 1 } },
-        h("div", { style: { fontSize: "13px", fontWeight: 600, color: p.exact ? "#10b981" : "rgba(255,255,255,0.8)" } }, p.name),
-        p.exact ? h("div", { style: { fontSize: "10px", color: "#10b981", fontWeight: 600 } }, "Resultado exacto!") : null
-      ),
-      p.pred ? h("div", { style: { fontSize: "14px", fontWeight: 800, color: "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", minWidth: "44px", textAlign: "center" } }, `${p.pred.score_a} - ${p.pred.score_b}`) :
-        h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.2)" } }, "—"),
-      badge(p.pts, false)
-    ))
+    state.deadlinePassed || state.authenticated
+      ? h("div", null,
+          h("h3", { style: { fontSize: "15px", fontWeight: 700, marginBottom: "10px" } }, "Prognósticos"),
+          ...(!state.deadlinePassed && state.authenticated
+            ? playerData.filter(p => p.id === state.viewerPlayerId)
+            : playerData
+          ).map((p, i) => h("div", { style: { display: "flex", alignItems: "center", padding: "10px 12px", borderRadius: "10px", background: p.exact ? "rgba(16,185,129,0.08)" : "rgba(255,255,255,0.03)", border: `1px solid ${p.exact ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.05)"}`, gap: "10px", marginBottom: "4px" } },
+            h("div", { style: { width: "20px", fontSize: "12px", fontWeight: 700, color: "rgba(255,255,255,0.25)", textAlign: "center" } }, String(i + 1)),
+            h("div", { style: { flex: 1 } },
+              h("div", { style: { fontSize: "13px", fontWeight: 600, color: p.exact ? "#10b981" : "rgba(255,255,255,0.8)" } }, p.name),
+              p.exact ? h("div", { style: { fontSize: "10px", color: "#10b981", fontWeight: 600 } }, "Resultado exacto!") : null
+            ),
+            p.pred ? h("div", { style: { fontSize: "14px", fontWeight: 800, color: "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", minWidth: "44px", textAlign: "center" } }, `${p.pred.score_a} - ${p.pred.score_b}`) :
+              h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.2)" } }, "—"),
+            badge(p.pts, false)
+          ))
+        )
+      : h("div", { style: { textAlign: "center", padding: "16px 0", fontSize: "12px", color: "rgba(255,255,255,0.3)" } },
+          "🔒 Os prognósticos ficam visíveis após o prazo de submissão"
+        )
   );
 }
 
@@ -1468,6 +1553,26 @@ function renderPredictions() {
   );
 }
 
+function renderIdentityModal() {
+  if (!state.identityModalOpen) return null;
+  return h("div", { className: "pin-overlay" },
+    h("div", { className: "pin-modal" },
+      h("div", { style: { fontSize: "32px", marginBottom: "8px" } }, "👋"),
+      h("div", { style: { fontSize: "15px", fontWeight: 700, color: "#fff", marginBottom: "4px" } }, "Quem és tu?"),
+      h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "16px" } },
+        "Identifica-te para aceder aos teus prognósticos"),
+      ...state.players.map(p =>
+        h("button", {
+          style: { display: "block", width: "100%", padding: "10px 16px", margin: "4px 0", borderRadius: "10px",
+            border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)",
+            color: "#fff", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", textAlign: "center" },
+          onClick: () => { setState({ identityModalOpen: false }); requestBootPin(p); }
+        }, p.name)
+      )
+    )
+  );
+}
+
 function renderPinModal() {
   if (!state.showPinModal) return null;
   const inp = document.createElement("input");
@@ -1480,10 +1585,11 @@ function renderPinModal() {
 
   return h("div", { className: "pin-overlay", onClick: (e) => { if (e.target.className === "pin-overlay") cancelPin(); } },
     h("div", { className: "pin-modal" },
-      h("div", { style: { fontSize: "32px", marginBottom: "8px" } }, "🔒"),
+      h("div", { style: { fontSize: "32px", marginBottom: "8px" } }, state.bootPinPlayerName ? "👋" : "🔒"),
       h("div", { style: { fontSize: "15px", fontWeight: 700, color: "#fff", marginBottom: "4px" } }, "Introduz o teu código"),
       h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "4px" } },
-        "A submeter como ", h("span", { style: { color: "#34d399", fontWeight: 700 } }, state.currentPlayer?.name || "")
+        state.bootPinPlayerName ? "Identifica-te como " : "A submeter como ",
+        h("span", { style: { color: "#34d399", fontWeight: 700 } }, state.bootPinPlayerName || state.currentPlayer?.name || "")
       ),
       inp,
       state.pinError ? h("div", { style: { fontSize: "12px", color: "#ef4444", fontWeight: 600, marginBottom: "8px" } }, "Código incorrecto") : null,
@@ -1523,7 +1629,9 @@ function render() {
 
   app.appendChild(renderNav());
 
-  // PIN modal overlay
+  // Identity and PIN modal overlays
+  const identityModal = renderIdentityModal();
+  if (identityModal) app.appendChild(identityModal);
   const pinModal = renderPinModal();
   if (pinModal) app.appendChild(pinModal);
 
