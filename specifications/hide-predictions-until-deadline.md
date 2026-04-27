@@ -85,6 +85,27 @@ spoof a post-deadline request to get all predictions early.
 Same pattern applies to `podium_predictions` and `bracket_predictions` — the function returns
 own-only pre-deadline, all post-deadline.
 
+### Database backstop (added later)
+
+The Edge Function is no longer the sole gatekeeper. The SELECT policies on `predictions`,
+`podium_predictions`, and `bracket_predictions` were tightened so that direct PostgREST reads
+with the anon key only succeed once `tournament_config.submission_deadline` has passed:
+
+```sql
+USING (EXISTS (
+  SELECT 1 FROM public.tournament_config
+  WHERE key = 'submission_deadline'
+    AND (value #>> '{}')::timestamptz < now()
+))
+```
+
+The Edge Function continues to work in either window because it uses the service-role key,
+which bypasses RLS. This means a curious user opening devtools and hitting
+`GET /rest/v1/predictions?select=*` directly will get an empty array pre-deadline, instead
+of every player's picks. The `players.code` column was also locked down at the same time:
+table-level SELECT was revoked from anon/authenticated and replaced with column-level grants
+on `id, name, short_name, created_at` only.
+
 ---
 
 ## Matches tab changes
@@ -146,6 +167,10 @@ identityModalOpen: false, // name-picker modal
 
 ## Out of scope
 
-- Server-side enforcement via Supabase RLS (v2, requires proper JWT auth)
 - PIN recovery flow (handled manually via DB access; PIN change spec is a separate issue)
 - Showing a countdown to when predictions will be revealed
+
+> Originally listed "server-side enforcement via Supabase RLS (v2, requires proper JWT auth)"
+> as out of scope for v1. That has since been added — see "Database backstop" above. JWT auth
+> wasn't needed; the deadline check reads from `tournament_config` server-side inside the
+> policy itself.
