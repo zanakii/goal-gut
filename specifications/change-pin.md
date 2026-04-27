@@ -15,6 +15,11 @@ in the player dropdown.
 `submit-predictions` Edge Function. The admin (Pedro) retains DB access as the fallback for
 a locked-out player — no recovery flow needed in the app.
 
+> Note: at the time this spec was written, `players.code` was readable by the anon role via
+> PostgREST (a historical exposure, since closed). Anon-side SELECT on the column was revoked
+> in a later hardening pass; only the service-role can now read PINs. The change-pin Edge
+> Function is unaffected because it uses the service role.
+
 ---
 
 ## Dependency
