@@ -70,21 +70,32 @@ All team names are in Portuguese. Match times are stored in UTC.
 
 ## Node.js scripts
 
-Require `.env` with `SUPABASE_CONNECTION_STRING` and `API_FOOTBALL_KEY`.
+Require `.env` with `SUPABASE_CONNECTION_STRING` and `FOOTBALL_DATA_TOKEN`.
 
 ```bash
 node seed-matches.js      # Insert 72 group-stage matches (ON CONFLICT DO NOTHING — safe to re-run)
-node seed-knockout.js     # Insert knockout fixtures
-node fetch-results.js     # Fetch and write match results from api-football.com (run by GitHub Actions)
-node find-league.js       # Discover api-football league IDs
-node test-api.js          # Test fixture fetch from api-football.com
+node seed-knockout.js     # Fetch and insert knockout fixtures from football-data.org
+node fetch-results.js     # Live + finished score poller (run by GitHub Actions)
+node test-api.js          # Smoke-test the football-data.org connection
 ```
 
-## Result fetching
+## Result fetching (live-results)
 
-`.github/workflows/fetch-results.yml` runs `node fetch-results.js` on a cron schedule every 10 minutes during match hours in June 2026. API key and Supabase credentials are in GitHub Secrets (`API_FOOTBALL_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`).
+`.github/workflows/fetch-results.yml` runs `node fetch-results.js` every 2 minutes during match hours throughout June and July 2026 — covering the group stage and the entire knockout bracket through the final on July 19.
 
-`team-map.js` maps api-football team names to the Portuguese names used in the database.
+The poller writes **both live and finished** scores. Status vocabulary:
+- `scheduled` — pre-kickoff
+- `live` — match in progress (IN_PLAY / PAUSED / EXTENDED / SUSPENDED upstream)
+- `finished` — terminal, settled in regulation or extra time
+- `pen-home` / `pen-away` — terminal, decided on penalties (winner encoded in status)
+
+Frontend invariant: `m.score_a !== null` means "show this score"; `isFinal(m)` means "this match is over — lock bracket/elimination logic on it". The leaderboard updates while a match is in progress.
+
+API token and Supabase credentials are in GitHub Secrets (`FOOTBALL_DATA_TOKEN`, `SUPABASE_URL`, `SUPABASE_KEY`). The repo is public so Actions are unmetered.
+
+`team-map.js` maps football-data.org team names to the Portuguese names used in the database.
+
+See `specifications/live-results-fetching.md` for the full spec.
 
 ## Environment variables
 
@@ -92,7 +103,7 @@ Loaded from `.env` (gitignored). Never hardcode credentials.
 
 ```
 SUPABASE_CONNECTION_STRING=   # Direct PostgreSQL connection (used by seed/fetch scripts)
-API_FOOTBALL_KEY=             # api-sports.io key (100 req/day free tier)
+FOOTBALL_DATA_TOKEN=          # football-data.org token (free tier: 10 req/min, no daily cap, WC2026 included)
 ```
 
 Edge Functions use their own environment variables configured in the Supabase dashboard (service-role key injected automatically by the runtime).

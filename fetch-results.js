@@ -2,49 +2,74 @@
 // ─────────────────────────────────────────────────────────────────────
 // HOW THIS WORKS:
 //
-// 1. This script runs on a schedule via GitHub Actions (every 10 min
-//    during match hours, 5PM-7AM BST / 16:00-06:00 UTC in June 2026).
+// 1. This script runs on a schedule via GitHub Actions (every 2 min
+//    during match hours, in June and July 2026 — covering the group
+//    stage and the entire knockout bracket through the final).
 //
-// 2. It calls the api-football.com API endpoint:
-//    GET /fixtures?league=1&season=2026&date=YYYY-MM-DD
-//    This returns ALL World Cup matches for today, with their current
-//    status and scores. It costs 1 API request per call.
+// 2. It calls football-data.org v4:
+//    GET /competitions/WC/matches?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
+//    Returns all WC matches for today, with current status and scores.
 //
-// 3. For any match with status "FT" (Full Time), "AET" (After Extra
-//    Time), or "PEN" (Penalties), it takes the fulltime score and
-//    updates the corresponding row in your Supabase matches table.
+// 3. It writes both LIVE and FINISHED scores to Supabase:
+//    - IN_PLAY / PAUSED / EXTENDED / SUSPENDED → status 'live'
+//    - FINISHED                                → status 'finished'
+//    - FINISHED on penalties                   → status 'pen-home' / 'pen-away'
+//    - POSTPONED                               → revert to 'scheduled' (null scores)
+//    - CANCELLED / AWARDED                     → log warning, no auto-write
 //
-// 4. It uses the Supabase REST API with your service role key to
-//    PATCH (update) the match rows. It matches on team names since
-//    we don't have api-football fixture IDs stored.
+// 4. Smart-skip: if there are no pending (scheduled or live) matches
+//    in the current window, skip the API call. Idempotent — only
+//    PATCHes when score or status actually changed.
 //
-// 5. The script is smart: it only calls the API if there are matches
-//    today that don't have results yet. On rest days, it does nothing.
-//
-// SETUP:
-//   - Add these as GitHub repository secrets:
-//     API_FOOTBALL_KEY  = your api-football.com API key
-//     SUPABASE_URL      = https://thjvoocszfzqkyatkevv.supabase.co
-//     SUPABASE_KEY      = your Supabase SERVICE ROLE key (not anon!)
-//                         Found in: Dashboard → Project Settings → API → service_role
-//
-//   - The service_role key is needed because we're writing data.
-//     Unlike the anon key, this one should NEVER be in frontend code.
+// SETUP (GitHub repo Secrets):
+//   FOOTBALL_DATA_TOKEN = your football-data.org API token
+//   SUPABASE_URL        = https://thjvoocszfzqkyatkevv.supabase.co
+//   SUPABASE_KEY        = Supabase SERVICE ROLE key (NOT anon)
 // ─────────────────────────────────────────────────────────────────────
 
-const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
+const FOOTBALL_DATA_TOKEN = process.env.FOOTBALL_DATA_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY; // service_role key
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// ─── Team name mapping (api-football English → your Portuguese DB names) ───
 const TEAM_MAP = require('./team-map');
+function translateTeam(name) { return TEAM_MAP[name] || name; }
 
-function translateTeam(name) {
-  return TEAM_MAP[name] || name;
+// ─── Status mapping ──────────────────────────────────────────────────
+// Maps a football-data.org match → { internalStatus, scoreA, scoreB, write }.
+// Returns null for statuses we shouldn't auto-write (CANCELLED / AWARDED).
+function mapMatch(match) {
+  const fd = match.status;
+  const ft = match.score?.fullTime || {};
+  const home = ft.home;
+  const away = ft.away;
+
+  if (fd === 'SCHEDULED' || fd === 'TIMED') {
+    return { internalStatus: 'scheduled', scoreA: null, scoreB: null, write: false };
+  }
+  if (fd === 'IN_PLAY' || fd === 'PAUSED' || fd === 'EXTENDED' || fd === 'SUSPENDED') {
+    return { internalStatus: 'live', scoreA: home ?? 0, scoreB: away ?? 0, write: true };
+  }
+  if (fd === 'FINISHED') {
+    const winner = match.score?.winner;
+    const hasPens = match.score?.penalties?.home != null;
+    if (hasPens) {
+      const internalStatus = winner === 'HOME_TEAM' ? 'pen-home' : 'pen-away';
+      return { internalStatus, scoreA: home, scoreB: away, write: true };
+    }
+    return { internalStatus: 'finished', scoreA: home, scoreB: away, write: true };
+  }
+  if (fd === 'POSTPONED') {
+    return { internalStatus: 'scheduled', scoreA: null, scoreB: null, write: true };
+  }
+  if (fd === 'CANCELLED' || fd === 'AWARDED') {
+    return null;
+  }
+  console.warn(`Unknown football-data.org status: ${fd}`);
+  return null;
 }
 
-// ─── Supabase helper ─────────────────────────────────────────────────
-async function supabaseUpdate(matchId, scoreA, scoreB, status = "finished") {
+// ─── Supabase ────────────────────────────────────────────────────────
+async function supabasePatch(matchId, scoreA, scoreB, status) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/matches?id=eq.${matchId}`, {
     method: "PATCH",
     headers: {
@@ -63,10 +88,14 @@ async function supabaseUpdate(matchId, scoreA, scoreB, status = "finished") {
   if (!r.ok) throw new Error(`Supabase PATCH failed: ${r.status}`);
 }
 
-async function getUnfinishedToday() {
-  const today = new Date().toISOString().split("T")[0];
+// Wider than today's 00:00-23:59 UTC: handles late kickoffs straddling
+// midnight, plus any match that's currently live regardless of kickoff.
+async function getPendingNow() {
+  const now = new Date();
+  const fromIso = new Date(now.getTime() - 4 * 3600 * 1000).toISOString();
+  const toIso = new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/matches?kickoff=gte.${today}T00:00:00Z&kickoff=lt.${today}T23:59:59Z&status=eq.scheduled&select=id,team_a,team_b`,
+    `${SUPABASE_URL}/rest/v1/matches?kickoff=gte.${fromIso}&kickoff=lt.${toIso}&status=in.(scheduled,live)&select=id,team_a,team_b,score_a,score_b,status`,
     { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
   );
   if (!r.ok) throw new Error(`Supabase GET failed: ${r.status}`);
@@ -77,68 +106,64 @@ async function getUnfinishedToday() {
 async function main() {
   console.log(`[${new Date().toISOString()}] Checking for results...`);
 
-  // Step 1: Check if there are unfinished matches today in our DB
-  const pending = await getUnfinishedToday();
+  const pending = await getPendingNow();
   if (pending.length === 0) {
-    console.log("No pending matches today. Skipping API call.");
+    console.log("No pending matches in window. Skipping API call.");
     return;
   }
-  console.log(`${pending.length} pending match(es) today.`);
+  console.log(`${pending.length} pending match(es) in window.`);
 
-  // Step 2: Fetch today's fixtures from api-football.com
-  // This costs 1 API request out of our 100/day budget
   const today = new Date().toISOString().split("T")[0];
   const r = await fetch(
-    `https://v3.football.api-sports.io/fixtures?league=1&season=2026&date=${today}`,
-    { headers: { "x-apisports-key": API_FOOTBALL_KEY } }
+    `https://api.football-data.org/v4/competitions/WC/matches?dateFrom=${today}&dateTo=${today}`,
+    { headers: { "X-Auth-Token": FOOTBALL_DATA_TOKEN } }
   );
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`football-data.org API ${r.status}: ${body}`);
+  }
   const data = await r.json();
-  const remaining = r.headers.get("x-ratelimit-requests-remaining");
-  console.log(`API requests remaining today: ${remaining}`);
-  console.log(`Fixtures returned: ${data.results || 0}`);
+  const remaining = r.headers.get('x-requests-available-minute');
+  console.log(`API requests remaining this minute: ${remaining ?? 'n/a'}`);
+  console.log(`Matches returned: ${data.matches?.length ?? 0}`);
 
-  if (!data.response || data.response.length === 0) {
-    console.log("No fixtures returned from API.");
+  if (!data.matches || data.matches.length === 0) {
+    console.log("No matches returned for today.");
     return;
   }
 
-  // Step 3: Check each fixture for finished status
-  // api-football status codes for finished matches: FT, AET, PEN
-  const finishedStatuses = ["FT", "AET", "PEN"];
-  let updated = 0;
+  let updated = 0, unchanged = 0;
 
-  for (const fixture of data.response) {
-    const status = fixture.fixture.status.short;
-    if (!finishedStatuses.includes(status)) continue;
+  for (const match of data.matches) {
+    const mapped = mapMatch(match);
+    if (!mapped || !mapped.write) continue;
 
-    const homeTeam = translateTeam(fixture.teams.home.name);
-    const awayTeam = translateTeam(fixture.teams.away.name);
-    const scoreA = fixture.goals.home;
-    const scoreB = fixture.goals.away;
+    const homeTeam = translateTeam(match.homeTeam.name);
+    const awayTeam = translateTeam(match.awayTeam.name);
 
-    // For penalty shootouts, encode the winner in the status field.
-    // fixture.goals stores the AET score (may be tied); penalty winner is separate.
-    let finalStatus = "finished";
-    if (status === "PEN") {
-      const penHome = fixture.score?.penalty?.home ?? 0;
-      const penAway = fixture.score?.penalty?.away ?? 0;
-      finalStatus = penHome > penAway ? "pen-home" : "pen-away";
-    }
-
-    // Find the matching pending match in our DB
-    const match = pending.find(m => m.team_a === homeTeam && m.team_b === awayTeam);
-    if (!match) {
-      console.log(`  ⚠ No DB match found for ${homeTeam} vs ${awayTeam} — team name mismatch?`);
+    const dbMatch = pending.find(p => p.team_a === homeTeam && p.team_b === awayTeam);
+    if (!dbMatch) {
+      console.log(`  ⚠ No DB match in window for ${homeTeam} vs ${awayTeam}`);
       continue;
     }
 
-    // Step 4: Update the score in Supabase
-    await supabaseUpdate(match.id, scoreA, scoreB, finalStatus);
-    console.log(`  ✓ Updated: ${homeTeam} ${scoreA}-${scoreB} ${awayTeam} [${finalStatus}] (match ${match.id})`);
+    if (
+      dbMatch.score_a === mapped.scoreA &&
+      dbMatch.score_b === mapped.scoreB &&
+      dbMatch.status === mapped.internalStatus
+    ) {
+      unchanged++;
+      continue;
+    }
+
+    await supabasePatch(dbMatch.id, mapped.scoreA, mapped.scoreB, mapped.internalStatus);
+    const sa = mapped.scoreA ?? '·';
+    const sb = mapped.scoreB ?? '·';
+    console.log(`  ✓ ${homeTeam} ${sa}-${sb} ${awayTeam} [${mapped.internalStatus}] (id ${dbMatch.id})`);
     updated++;
   }
 
-  console.log(`\nDone. Updated ${updated} match(es). ${pending.length - updated} still pending.`);
+  console.log(`\nDone. Updated ${updated}, unchanged ${unchanged}.`);
 }
 
 main().catch(e => {
