@@ -143,6 +143,17 @@ async function sbPost(table, data) {
   if (!r.ok) { const e = await r.text(); throw new Error(`POST ${table}: ${r.status} ${e}`); }
 }
 
+// Fire-and-forget engagement logging. Never blocks UI; failures are silent.
+let __appOpenLogged = false;
+function logEvent(event, metadata = null) {
+  if (!state.viewerPlayerId) return;
+  fetch(`${SUPABASE_URL}/rest/v1/app_events`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ player_id: state.viewerPlayerId, event, metadata })
+  }).catch(() => {});
+}
+
 async function callGetPredictions(player_id, pin) {
   const r = await fetch(`${SUPABASE_URL}/functions/v1/get-predictions`, {
     method: "POST",
@@ -407,6 +418,12 @@ async function loadData(silent = false) {
 
     // Show identity flow if pre-deadline and not yet authenticated
     if (!deadlinePassed && !state.viewerPlayerId) initiateIdentityFlow();
+
+    // Fire app_open once per page-load, after we know who the viewer is.
+    if (state.viewerPlayerId && !__appOpenLogged) {
+      __appOpenLogged = true;
+      logEvent('app_open');
+    }
   } catch (e) { setState({ error: e.message, loading: false }); }
 }
 
@@ -488,6 +505,7 @@ async function submitPredictions() {
       state.submittedAt = new Date();
       if (hadBracket) { state.bracketStale = true; }
       render();
+      logEvent('preds_submit', { count: predictions.length });
     } catch (e) { alert("Erro: " + e.message); setState({ submitting: false }); }
   });
 }
@@ -856,6 +874,7 @@ async function submitBracket() {
       await loadData(true);
       state.bracketSubmitting = false;
       render();
+      logEvent('bracket_submit', { picks: picks.length, with_podium: !!podium });
     } catch (e) { alert("Erro: " + e.message); setState({ bracketSubmitting: false }); }
   });
 }
@@ -1034,6 +1053,7 @@ function navigateTo(newView) {
     return;
   }
   setState({ view: newView });
+  logEvent('tab_view', { tab: newView });
 }
 
 // ─── RENDER ──────────────────────────────────────────────────────────
@@ -1585,6 +1605,7 @@ async function submitChangePin() {
     state.viewerPin = next;
     setState({ showChangePinModal: false, changePinSubmitting: false, changePinError: null,
       changePinValues: { current: "", next: "", confirm: "" }, changePinSuccess: true });
+    logEvent('pin_change');
     setTimeout(() => { state.changePinSuccess = false; render(); }, 3000);
   } catch (e) {
     setState({ changePinSubmitting: false });
@@ -1764,5 +1785,6 @@ window.addEventListener("beforeunload", (e) => {
 });
 loadData();
 </script>
+<script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>
