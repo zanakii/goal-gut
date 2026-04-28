@@ -1,25 +1,24 @@
 require('dotenv').config();
-const API_KEY = process.env.API_FOOTBALL_KEY;
+const TOKEN = process.env.FOOTBALL_DATA_TOKEN;
 
 async function test() {
-  const res = await fetch(
-    'https://v3.football.api-sports.io/fixtures?league=1&season=2026',
-    { headers: { 'x-apisports-key': API_KEY } }
-  );
+  const url = 'https://api.football-data.org/v4/competitions/WC/matches?dateFrom=2026-06-11&dateTo=2026-06-11';
+  const res = await fetch(url, { headers: { 'X-Auth-Token': TOKEN } });
 
   console.log('Status:', res.status);
-  console.log('Remaining requests:', res.headers.get('x-ratelimit-requests-remaining'));
+  console.log('Rate-limit remaining (this minute):', res.headers.get('x-requests-available-minute'));
 
   const data = await res.json();
-  console.log('Results count:', data.results);
+  console.log('Matches count:', data.matches?.length ?? 0);
 
-  if (data.response && data.response.length > 0) {
-    const first = data.response[0];
-    console.log('First match:', first.teams.home.name, 'vs', first.teams.away.name);
-    console.log('Round:', first.league.round);
-    console.log('Date:', first.fixture.date);
+  if (data.matches?.length) {
+    const first = data.matches[0];
+    console.log('First match:', first.homeTeam.name, 'vs', first.awayTeam.name);
+    console.log('Stage:', first.stage);
+    console.log('Status:', first.status);
+    console.log('UTC date:', first.utcDate);
   } else {
-    console.log('Errors:', JSON.stringify(data.errors));
+    console.log('Response:', JSON.stringify(data, null, 2).slice(0, 600));
   }
 }
 

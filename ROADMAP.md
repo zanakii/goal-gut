@@ -8,7 +8,7 @@ A private predictions pool for a closed group of friends. Intentionally simple: 
 - 72 group-stage matches seeded in Supabase
 - Predictions submitted via PIN-protected form
 - Leaderboard with cumulative points chart
-- Automated result fetching via GitHub Actions + api-football.com
+- Live + finished result fetching via GitHub Actions + football-data.org (every 2 min during match hours, June–July 2026)
 - Hosted on Vercel at goalgut.gg
 
 **Known limitations (by design):**
