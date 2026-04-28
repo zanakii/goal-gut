@@ -56,10 +56,18 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Upsert predictions (service role bypasses RLS)
+    // Force player_id from the verified PIN — never trust the client-supplied value
+    // on each row (service role bypasses RLS, so this is the only check).
+    const safeRows = predictions.map((p: { match_id: number; score_a: number; score_b: number }) => ({
+      player_id,
+      match_id: p.match_id,
+      score_a: p.score_a,
+      score_b: p.score_b,
+    }))
+
     const { error: predError } = await supabase
       .from('predictions')
-      .upsert(predictions, { onConflict: 'player_id,match_id' })
+      .upsert(safeRows, { onConflict: 'player_id,match_id' })
 
     if (predError) throw new Error(predError.message)
 
@@ -67,7 +75,12 @@ Deno.serve(async (req) => {
     if (podium?.first_place && podium?.second_place && podium?.third_place) {
       const { error: podiumError } = await supabase
         .from('podium_predictions')
-        .upsert({ player_id, ...podium }, { onConflict: 'player_id' })
+        .upsert({
+          player_id,
+          first_place: podium.first_place,
+          second_place: podium.second_place,
+          third_place: podium.third_place,
+        }, { onConflict: 'player_id' })
       if (podiumError) throw new Error(podiumError.message)
     }
 
