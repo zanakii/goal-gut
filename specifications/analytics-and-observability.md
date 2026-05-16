@@ -4,7 +4,7 @@
 
 The app went live without any visibility into how it's being used. We can't tell whether
 players are returning, whether anyone's stuck on a screen, or whether a silent JS error is
-preventing submissions. For a beta with 8 friends this matters less than the public v2, but
+preventing submissions. For a beta with 8 friends this matters less than the public edition, but
 we still need enough signal to nudge stragglers before the deadline and catch regressions
 the same day they ship.
 
@@ -21,7 +21,7 @@ Two layers, kept independent:
 Plus an observability track for errors and (later) session replay, so we can debug without
 a player having to describe what they saw.
 
-Cost ceiling: free for v1. Upgrade only when v2 widens the audience.
+Cost ceiling: free for v0. Upgrade only when the public edition widens the audience.
 
 ---
 
@@ -167,7 +167,7 @@ viewer's `is_admin` flag is set (the flag comes back from `get-predictions`'s pl
 or a small `whoami` call). Renders three small tables (active in last 48h, daily opens,
 submission completeness) and a "refresh" button that re-calls `admin-stats`.
 
-No charts in v1.x — Chart.js is already loaded for the leaderboard, so a single line chart
+No charts in v0 — Chart.js is already loaded for the leaderboard, so a single line chart
 of daily opens is cheap to add if we want it.
 
 ---
@@ -217,15 +217,15 @@ what happened. Two free options:
 - **PostHog free tier** — 5k recordings/month, also free. Heavier setup but pairs with
   funnels and feature flags if we ever want them.
 
-Recommendation: **Clarity for v1.x**, evaluate PostHog when v2's feature work begins.
+Recommendation: **Clarity for v0**, evaluate PostHog when the public edition's feature work begins.
 
 This is the lowest-priority phase — only worth pulling in if a real bug report needs it.
 
 ---
 
-## v2 carry-over (definitely an issue)
+## Public-edition carry-over (definitely an issue)
 
-When v2 introduces multi-pool / leagues:
+When the public edition introduces multi-pool / leagues:
 
 - **`app_events` needs `pool_id`** (or `league_id`). Without it, aggregations across pools
   will mix users from different pools. Migration:
@@ -240,13 +240,13 @@ When v2 introduces multi-pool / leagues:
 - **Vercel Analytics cap.** 2,500 events/month is fine at 8 friends. At 50–100 active
   users the cap will hit; that's the trigger to either upgrade to Vercel Pro (Analytics
   included) or move to Plausible/Umami.
-- **Disclosure.** v2 is a public release; the implicit-consent model (you joined a friend's
+- **Disclosure.** The public edition is a public release; the implicit-consent model (you joined a friend's
   pool) doesn't apply. Add a one-line privacy note near the PIN-replacement (Supabase Auth)
   flow and a brief "what we log" entry in a Settings page.
 - **Sentry, Clarity, PostHog** — all support multi-tenant tagging via `setUser` /
   `setContext`. Pass `pool_id` as a tag at session start.
 
-Track these as part of milestone `v2.0-public-edition`.
+Track these as part of milestone `public-edition`.
 
 ---
 
@@ -284,9 +284,9 @@ Phase 5:
 
 ## Out of scope
 
-- **In-app disclosure of engagement logging** for v1 (friends-only). Will be added in v2.
+- **In-app disclosure of engagement logging** for v0 (friends-only). Will be added in the public edition.
 - **Drop-off / funnel tracking** ("opened but didn't submit"). Possible to derive from
-  `app_events` ad hoc; not worth the dashboard plumbing in v1.
+  `app_events` ad hoc; not worth the dashboard plumbing in v0.
 - **Stopping logs after the deadline.** Cheap to leave on; rows are already capped by the
   TTL.
 - **Custom Vercel Analytics events.** We'd be double-logging what `app_events` already

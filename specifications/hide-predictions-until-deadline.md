@@ -170,7 +170,7 @@ identityModalOpen: false, // name-picker modal
 - PIN recovery flow (handled manually via DB access; PIN change spec is a separate issue)
 - Showing a countdown to when predictions will be revealed
 
-> Originally listed "server-side enforcement via Supabase RLS (v2, requires proper JWT auth)"
-> as out of scope for v1. That has since been added — see "Database backstop" above. JWT auth
-> wasn't needed; the deadline check reads from `tournament_config` server-side inside the
-> policy itself.
+> Originally listed as out of scope for v0: "server-side enforcement via Supabase RLS
+> (deferred to the public edition, requires proper JWT auth)". That has since been added —
+> see "Database backstop" above. JWT auth wasn't needed; the deadline check reads from
+> `tournament_config` server-side inside the policy itself.
