@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Before claiming any work is pending, in-flight, or unresolved based on a memory entry, verify against current code and `git log`. Memory entries are point-in-time observations and rot — a file named in memory may have shipped, been renamed, or been deleted. Memory is a hint about where to look, never a source of truth about current state.
 
+## Working defaults
+
+- **`.env` files are off-limits.** A global PreToolUse hook blocks `Read` and `Bash` access to `.env`, `.env.local`, `.env.production`, etc. (`.env.example` is allowed). If you genuinely need a value, surface the restriction to the user — name the variable, explain why you need it, and ask them to report the value back. Do not attempt grep/cat workarounds.
+- **Archive specs in the same commit that ships them.** When committing a feature whose spec lives in `specifications/`, move the spec file to `specifications/_archive/` as part of that commit. Only active/in-flight specs should sit at the top level of `specifications/`.
+- **Run advisors after Supabase migrations.** After any `mcp__supabase__apply_migration` (or `execute_sql` that performs DDL), call `mcp__supabase__get_advisors` for both `security` and `performance` and surface any new findings to the user before declaring the work done.
+
 ## Project overview
 
 **Goal Gut** — a private World Cup 2026 predictions pool for a closed group of friends, live at [goalgut.gg](https://goalgut.gg).
