@@ -11,6 +11,7 @@ Before claiming any work is pending, in-flight, or unresolved based on a memory 
 - **`.env` files are off-limits.** A global PreToolUse hook blocks `Read` and `Bash` access to `.env`, `.env.local`, `.env.production`, etc. (`.env.example` is allowed). If you genuinely need a value, surface the restriction to the user — name the variable, explain why you need it, and ask them to report the value back. Do not attempt grep/cat workarounds.
 - **Archive specs in the same commit that ships them.** When committing a feature whose spec lives in `specifications/`, move the spec file to `specifications/_archive/` as part of that commit. Only active/in-flight specs should sit at the top level of `specifications/`.
 - **Run advisors after Supabase migrations.** After any `mcp__supabase__apply_migration` (or `execute_sql` that performs DDL), call `mcp__supabase__get_advisors` for both `security` and `performance` and surface any new findings to the user before declaring the work done.
+- **Verify mutating scripts before running.** Before invoking any script that writes to Supabase (`node seed-*.js`, `fetch-results.js`, ad-hoc `pg.query` writes), (a) read the actual SQL to confirm the conflict targets and `WHERE` clauses do what the comments claim — don't trust "safe to re-run" notes — and (b) capture a baseline with `node db-snapshot.js > before.txt`, then run, then `node db-snapshot.js > after.txt && diff before.txt after.txt` to surface any unexpected row-count or constraint changes before declaring success.
 
 ## Project overview
 
@@ -87,6 +88,7 @@ node seed-matches.js      # Insert 72 group-stage matches (idempotent via UNIQUE
 node seed-knockout.js     # Fetch and insert knockout fixtures from football-data.org
 node fetch-results.js     # Live + finished score poller (run by GitHub Actions)
 node test-api.js          # Smoke-test the football-data.org connection
+node db-snapshot.js       # Read-only: row counts + uniques per table; diff before/after a mutation
 ```
 
 ## Result fetching (live-results)
