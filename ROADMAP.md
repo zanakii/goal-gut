@@ -1,6 +1,6 @@
 # Roadmap
 
-## v1.0 — WC2026 Friends Edition (current)
+## v0 — WC2026 Friends Edition (current)
 
 A private predictions pool for a closed group of friends. Intentionally simple: single HTML file, PIN-based identity, manually seeded players.
 
@@ -20,9 +20,9 @@ A private predictions pool for a closed group of friends. Intentionally simple: 
 
 ---
 
-## v2.0 — Public Edition
+## Public Edition (post-WC2026)
 
-Tracked under the [`v2.0-public-edition`](https://github.com/zanakii/goal-gut/milestone) milestone.
+Tracked under the [`public-edition`](https://github.com/zanakii/goal-gut/milestone) milestone.
 
 ### #5 — Auth
 Replace the PIN system with **Supabase Auth magic links**. Each user gets a real account tied to an email address. This unlocks proper RLS enforcement — Supabase can verify `auth.uid()` on every request, removing the need for the Edge Function workaround.
@@ -60,8 +60,8 @@ Key decisions:
 
 ```
 Now            WC2026 friends edition — ship and enjoy it
-Post-WC2026    Tag v1.0-wc2026-friends, freeze current Supabase project
-2027–2028      Build v2: auth → multi-tenancy → new frontend (in that order)
+Post-WC2026    Tag v0-wc2026-friends, freeze current Supabase project
+2027–2028      Build the public edition: auth → multi-tenancy → new frontend (in that order)
 WC2030 -6m     Public launch
 ```
 
@@ -69,13 +69,13 @@ WC2030 -6m     Public launch
 
 ---
 
-## Preserving v1
+## Preserving v0
 
 When WC2026 ends:
 
 ```bash
-git tag v1.0-wc2026-friends
-git push origin v1.0-wc2026-friends
+git tag v0-wc2026-friends
+git push origin v0-wc2026-friends
 ```
 
-The current Supabase project stays live as a read-only record. v2 starts from a new repo and a new Supabase project.
+The current Supabase project stays live as a read-only record. The public edition starts from a new repo and a new Supabase project.

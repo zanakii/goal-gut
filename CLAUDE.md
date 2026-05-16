@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Verify before recall
+
+Before claiming any work is pending, in-flight, or unresolved based on a memory entry, verify against current code and `git log`. Memory entries are point-in-time observations and rot — a file named in memory may have shipped, been renamed, or been deleted. Memory is a hint about where to look, never a source of truth about current state.
+
 ## Project overview
 
 **Goal Gut** — a private World Cup 2026 predictions pool for a closed group of friends, live at [goalgut.gg](https://goalgut.gg).
@@ -12,9 +16,9 @@ Players predict group-stage scores (72 matches) and knockout bracket winners. Sc
 - `index.html` — entire frontend (vanilla JS + CSS, no framework, no build step)
 - Supabase — PostgreSQL database + Edge Functions (project: `thjvoocszfzqkyatkevv`, region: `eu-west-1`)
 - Vercel — static hosting, auto-deploys from `main`
-- GitHub Actions — scheduled result fetching every 10 min during match hours (June 2026)
+- GitHub Actions — scheduled result fetching every 2 min during match hours (June–July 2026)
 
-This is **v1.0** — a deliberately simple, single-pool edition. Do not refactor toward a framework or introduce auth libraries; v2.0 (SvelteKit/Next.js + Supabase Auth) is planned post-tournament. See `ROADMAP.md`.
+This is the **v0** edition — a deliberately simple, single-pool edition. Do not refactor toward a framework or introduce auth libraries; the **public edition** (SvelteKit + Supabase Auth) is planned post-tournament. See `ROADMAP.md`.
 
 ## Frontend (`index.html`)
 
@@ -25,7 +29,7 @@ Key patterns:
 - **Tabs:** `state.view` — values: `"matches"`, `"predictions"`, `"bracket"`, `"leaderboard"`
 - **Identity:** PIN-based. `state.viewerPlayerId` holds the authenticated player; stored in `localStorage` as `goalgut_player_id` for return visits.
 - **Deadline:** fetched from `tournament_config` at boot. Pre-deadline: predictions are hidden and PIN-gated. Post-deadline: all predictions visible to everyone.
-- **Scoring:** `calcPts(pred, m)` returns **penalty points** (lower = better, exact = 0). It sums two parts: an **outcome penalty** — 0 if the predicted winner/draw matches the actual result, +3 if wrong with a draw involved on either side, +5 if both sides picked a winner but the wrong one — and a **goal-error penalty** equal to `|score_a - pred_a| + |score_b - pred_b|`. `isExact(pred, m)` returns true when both scores match exactly. `calcPodiumPts(podiumArr, tournamentState)` scores the optional 1-2-3 podium pick after the group stage ends: 0 for correct slot, +10 for right team in wrong slot, +20 for missing/eliminated/wrong (max 60). The leaderboard sorts ascending. Do not duplicate this logic elsewhere — `badgeColor` thresholds in `index.html` are calibrated to this scale.
+- **Scoring:** `calcPts(pred, m)` returns **penalty points** (lower = better, exact = 0). It sums two parts: an **outcome penalty** — 0 if the predicted winner/draw matches the actual result, +3 if wrong with a draw involved on either side, +5 if both sides picked a winner but the wrong one — and a **goal-error penalty** equal to `|score_a - pred_a| + |score_b - pred_b|`. `isExact(pred, m)` returns true when both scores match exactly. `calcPodiumPts(podiumArr, tournamentState)` scores the optional 1-2-3 podium pick after the group stage ends: 0 for correct slot, +10 for right team in wrong slot, +20 for missing/eliminated/wrong (max 60). The leaderboard sorts ascending. Do not duplicate this logic elsewhere — `badgeColor` thresholds in `index.html` are calibrated to this scale. **Bracket picks (`bracket_predictions`) do not score independently** — the knockout bracket is a UX device that helps each player visualise seedings and draft the path to their 1-2-3 podium pick, which is the thing that actually scores via `calcPodiumPts`.
 - **Excel:** SheetJS (`xlsx`) handles template generation and import. `generateTemplate()` builds the download; import reads the same format.
 - **Charts:** Chart.js for the leaderboard score trend.
 
