@@ -22,7 +22,7 @@ A private predictions pool for a closed group of friends. Intentionally simple: 
 
 ## Public Edition (post-WC2026)
 
-Tracked under the [`public-edition`](https://github.com/zanakii/goal-gut/milestone) milestone.
+Being built as a separate project in a sibling `goalgut/` repo — a clean rebuild, not a refactor.
 
 ### #5 — Auth
 Replace the PIN system with **Supabase Auth magic links**. Each user gets a real account tied to an email address. This unlocks proper RLS enforcement — Supabase can verify `auth.uid()` on every request, removing the need for the Edge Function workaround.
