@@ -21,6 +21,17 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|mcp__supabase__apply_migration|mcp__supabase__execute_sql",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=$(jq -r '.tool_input.command // .tool_input.query // empty'); if [ -z \"$c\" ]; then exit 0; fi; if echo \"$c\" | grep -Eq '^[[:space:]]*node[[:space:]]+db-snapshot\\.js'; then exit 0; fi; if echo \"$c\" | grep -Eqi '(node[[:space:]]+(seed-|fetch-results)|pg\\.query.*(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE)|^[[:space:]]*(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|TRUNCATE))'; then mkdir -p .claude && node db-snapshot.js > .claude/.snapshot-before.txt 2>/dev/null || true; fi; exit 0"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -28,6 +39,15 @@
           {
             "type": "command",
             "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | grep -q '^supabase/functions/' && echo '{\"systemMessage\": \"⚠️  Edge Function changed — remember: supabase functions deploy <name>\"}' || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|mcp__supabase__apply_migration|mcp__supabase__execute_sql",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "c=$(jq -r '.tool_input.command // .tool_input.query // empty'); if [ -z \"$c\" ] || [ ! -f .claude/.snapshot-before.txt ]; then exit 0; fi; if echo \"$c\" | grep -Eq '^[[:space:]]*node[[:space:]]+db-snapshot\\.js'; then exit 0; fi; node db-snapshot.js > .claude/.snapshot-after.txt 2>/dev/null || true; d=$(diff .claude/.snapshot-before.txt .claude/.snapshot-after.txt | head -40); if [ -n \"$d\" ]; then printf '%s\\n' \"$d\" | jq -Rs '{systemMessage: (\"DB snapshot diff after this command:\\n\" + .)}'; else echo '{\"systemMessage\":\"DB snapshot: no row/constraint changes.\"}'; fi; rm -f .claude/.snapshot-before.txt .claude/.snapshot-after.txt; exit 0"
           }
         ]
       }

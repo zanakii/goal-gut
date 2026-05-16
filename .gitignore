@@ -29,3 +29,6 @@ pids/
 
 # REPL history
 .node_repl_history
+
+# Claude hook scratch files (DB snapshot diffs)
+.claude/.snapshot-*.txt
