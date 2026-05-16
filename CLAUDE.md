@@ -28,7 +28,7 @@ This is the **v0** edition — a deliberately simple, single-pool edition. Do no
 
 ## Frontend (`index.html`)
 
-Single file, ~1700 lines. No build step — edit and push; Vercel deploys it.
+Single file. No build step — edit and push; Vercel deploys it.
 
 Key patterns:
 - **State-driven rendering:** a single `state` object + `render()` function controls all UI. Mutate state via `setState({...})` which calls `render()`.
@@ -105,7 +105,7 @@ API token and Supabase credentials are in GitHub Secrets (`FOOTBALL_DATA_TOKEN`,
 
 `team-map.js` maps football-data.org team names to the Portuguese names used in the database.
 
-See `specifications/live-results-fetching.md` for the full spec.
+See `specifications/_archive/live-results-fetching.md` for the full spec.
 
 ## Environment variables
 

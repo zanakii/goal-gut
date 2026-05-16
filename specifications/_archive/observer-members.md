@@ -280,7 +280,7 @@ dinner-split spec.
    submit → leaderboard layout → chart → predictions tab.
 
 This sequencing assumes the dinner-split spec
-(`specifications/leaderboard-v0-dinner-split.md`) is implemented **first** or in parallel.
+(`specifications/_archive/leaderboard-v0-dinner-split.md`) is implemented **first** or in parallel.
 The Observadores section piggybacks on `lb` partitioning, which only makes sense once the
 main-section logic exists.
 
