@@ -78,10 +78,17 @@
 
   /* Leaderboard row */
   .lb-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer; font-family: inherit; text-align: left; background: rgba(255,255,255,0.02); margin-bottom: 6px; }
+  .lb-row.half-top { background: rgba(16,185,129,0.08); border-left: 2px solid rgba(16,185,129,0.3); }
+  .lb-row.half-bottom { background: rgba(239,68,68,0.08); border-left: 2px solid rgba(239,68,68,0.3); }
+  .lb-row.half-neutral { background: rgba(255,255,255,0.04); border-left: 2px dashed rgba(255,255,255,0.2); }
   .lb-row.top { background: rgba(52,211,153,0.06); border-color: rgba(52,211,153,0.12); }
+  .lb-row.locked-green { background: rgba(16,185,129,0.18); border-left: 3px solid #10b981; }
+  .lb-row.locked-red { background: rgba(239,68,68,0.18); border-left: 3px solid #ef4444; }
   .lb-row.expanded-top { border-radius: 12px 12px 0 0; border-bottom: none; }
   .lb-expand { padding: 10px 14px 12px; border-radius: 0 0 12px 12px; border: 1px solid rgba(255,255,255,0.05); border-top: none; animation: fadeIn 0.15s ease; }
   .lb-expand.top { background: rgba(52,211,153,0.03); border-color: rgba(52,211,153,0.12); }
+  .lb-section-header { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: rgba(255,255,255,0.5); margin: 20px 0 8px; }
+  .lb-row--observer { background: rgba(255,255,255,0.02); border-left: 2px solid transparent; }
 
   /* PIN modal */
   .pin-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
@@ -193,6 +200,13 @@ const TERMINAL_STATUSES = new Set(['finished', 'pen-home', 'pen-away']);
 function isFinal(m) { return TERMINAL_STATUSES.has(m.status); }
 function isLive(m) { return m.status === 'live'; }
 
+function tournamentStarted() {
+  const now = Date.now();
+  return state.matches.some(m =>
+    new Date(m.kickoff).getTime() <= now || m.score_a !== null || isLive(m) || isFinal(m)
+  );
+}
+
 function matchWinner(m) {
   if (!isFinal(m)) return null;
   if (m.score_a === null) return null;
@@ -203,22 +217,26 @@ function matchWinner(m) {
   return null;
 }
 
-function calcPodiumPts(podiumArr, tournamentState) {
+function calcPodiumSlotPts(slotIndex, predicted, tournamentState) {
   if (!tournamentState?.groupStageComplete) return null;
   const { champion, runnerUp, third, eliminated } = tournamentState;
   const actual = [champion, runnerUp, third];
+  if (!predicted) return 20;
+  if (eliminated.has(predicted)) return 20;
+  if (actual[slotIndex] !== null) {
+    if (predicted === actual[slotIndex]) return 0;
+    if (actual.filter(Boolean).includes(predicted)) return 10;
+    return 20;
+  }
+  return null; // team still in tournament, position unknown — don't score yet
+}
+
+function calcPodiumPts(podiumArr, tournamentState) {
+  if (!tournamentState?.groupStageComplete) return null;
   let pts = 0, hasAnyScore = false;
   for (let i = 0; i < 3; i++) {
-    const predicted = podiumArr[i];
-    if (!predicted) { pts += 20; hasAnyScore = true; continue; }
-    if (eliminated.has(predicted)) {
-      pts += 20; hasAnyScore = true;
-    } else if (actual[i] !== null) {
-      if (predicted === actual[i]) { hasAnyScore = true; }
-      else if (actual.filter(Boolean).includes(predicted)) { pts += 10; hasAnyScore = true; }
-      else { pts += 20; hasAnyScore = true; }
-    }
-    // team still in tournament, position unknown — don't score yet
+    const slotPts = calcPodiumSlotPts(i, podiumArr[i], tournamentState);
+    if (slotPts !== null) { pts += slotPts; hasAnyScore = true; }
   }
   return hasAnyScore ? pts : null;
 }
@@ -251,20 +269,29 @@ const FLAGS = {
 function flagOf(team) { return FLAGS[team] || ''; }
 function teamWithFlag(team) { const f = flagOf(team); return (team && f) ? `${f} ${team}` : (team || ''); }
 
+function playerLabel(p, short = false) {
+  const text = short ? (p.short_name || p.name.split(" ")[0]) : p.name;
+  return p.is_observer ? `👀 ${text}` : text;
+}
+
+function slugOf(p) { return p.slug || p.name.replace(/\s+/g, "_").slice(0, 8).toUpperCase(); }
+function slugLabel(p) { return p.is_observer ? `👀 ${slugOf(p)}` : slugOf(p); }
+
 // ─── FORMATTING ──────────────────────────────────────────────────────
 function fmtShort(iso) { const d = new Date(iso); return `${d.getDate().toString().padStart(2,"0")}/${(d.getMonth()+1).toString().padStart(2,"0")}`; }
 function fmtTime(iso) { const d = new Date(iso); return `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`; }
 function fmtDate(iso) { const wd = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"]; const d = new Date(iso); return `${wd[d.getDay()]} ${fmtShort(iso)} ${fmtTime(iso)}`; }
 
 // ─── CHART ───────────────────────────────────────────────────────────
-let chartInstance = null;
+let chartInstances = { main: null, observers: null };
 
 const PLAYER_COLORS = ["#34d399","#06b6d4","#f59e0b","#f472b6","#a78bfa","#fb923c","#60a5fa","#e2e8f0"];
 
-function initChart() {
-  const canvas = document.getElementById("points-chart");
+function buildChart(canvasId, players, instanceKey) {
+  const canvas = document.getElementById(canvasId);
   if (!canvas) return;
-  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+  if (chartInstances[instanceKey]) { chartInstances[instanceKey].destroy(); chartInstances[instanceKey] = null; }
+  if (players.length === 0) return;
 
   const played = state.matches
     .filter(m => m.score_a !== null)
@@ -272,7 +299,7 @@ function initChart() {
 
   const dates = [...new Set(played.map(m => m.kickoff.split("T")[0]))].sort();
 
-  const datasets = state.players.map((p, i) => {
+  const datasets = players.map((p, i) => {
     let cumulative = 0;
     const data = dates.map(date => {
       played.filter(m => m.kickoff.startsWith(date)).forEach(m => {
@@ -282,7 +309,7 @@ function initChart() {
       return cumulative;
     });
     return {
-      label: p.short_name || p.name.split(" ")[0],
+      label: playerLabel(p, true),
       data,
       borderColor: PLAYER_COLORS[i % PLAYER_COLORS.length],
       backgroundColor: "transparent",
@@ -292,7 +319,7 @@ function initChart() {
     };
   });
 
-  chartInstance = new Chart(canvas, {
+  chartInstances[instanceKey] = new Chart(canvas, {
     type: "line",
     data: {
       labels: dates.map(d => { const [,m,day] = d.split("-"); return `${day}/${m}`; }),
@@ -320,6 +347,11 @@ function initChart() {
       }
     }
   });
+}
+
+function initCharts() {
+  buildChart("points-chart", state.players.filter(p => !p.is_observer), "main");
+  buildChart("obs-points-chart", state.players.filter(p => p.is_observer), "observers");
 }
 
 // ─── STATE ───────────────────────────────────────────────────────────
@@ -1102,7 +1134,7 @@ function renderHeader() {
         (cp?.name?.split(" ")[0] || "Jogador") + " ▾"
       ),
       state.dropdownOpen ? h("div", { className: "player-dropdown" },
-        ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, p.name)),
+        ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, playerLabel(p))),
         state.viewerPlayerId && !state.deadlinePassed ? h("button", {
           style: { borderTop: "1px solid rgba(255,255,255,0.08)" },
           onClick: () => setState({ dropdownOpen: false, showChangePinModal: true, changePinValues: { current: "", next: "", confirm: "" }, changePinError: null })
@@ -1125,7 +1157,7 @@ function renderNav() {
     { id: "matches", label: "Jogos", icon: "⚽" },
     { id: "leaderboard", label: "Classificação", icon: "📊" },
     { id: "predictions", label: "Prognósticos", icon: "✏️" },
-  ];
+  ].filter(t => t.id !== "leaderboard" || tournamentStarted());
   const activeId = state.view === "bracket" ? "predictions" : state.view;
   return h("nav", { className: "nav" },
     ...tabs.map(t => h("button", { className: activeId === t.id ? "active" : "", onClick: () => navigateTo(t.id) },
@@ -1153,7 +1185,10 @@ function renderMatches() {
   filtered.forEach(m => { if (!grouped[m.group_letter]) grouped[m.group_letter] = []; grouped[m.group_letter].push(m); });
 
   return h("div", { className: "content" },
-    h("h2", null, "Jogos"),
+    h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
+      h("h2", { style: { marginBottom: 0 } }, "Jogos"),
+      state.deadlinePassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
+    ),
     h("div", { className: "filters" },
       ...["all","played","upcoming"].map(s => h("button", { className: `filter-btn ${state.statusFilter === s ? "active" : ""}`, onClick: () => setState({ statusFilter: s }) },
         s === "all" ? "Todos" : s === "played" ? "Jogados" : "Por jogar"))
@@ -1266,7 +1301,7 @@ function renderMatchDetail() {
           ).map((p, i) => h("div", { style: { display: "flex", alignItems: "center", padding: "10px 12px", borderRadius: "10px", background: p.exact ? "rgba(16,185,129,0.08)" : "rgba(255,255,255,0.03)", border: `1px solid ${p.exact ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.05)"}`, gap: "10px", marginBottom: "4px" } },
             h("div", { style: { width: "20px", fontSize: "12px", fontWeight: 700, color: "rgba(255,255,255,0.25)", textAlign: "center" } }, String(i + 1)),
             h("div", { style: { flex: 1 } },
-              h("div", { style: { fontSize: "13px", fontWeight: 600, color: p.exact ? "#10b981" : "rgba(255,255,255,0.8)" } }, p.name),
+              h("div", { style: { fontSize: "13px", fontWeight: 600, color: p.exact ? "#10b981" : "rgba(255,255,255,0.8)" } }, playerLabel(p)),
               p.exact ? h("div", { style: { fontSize: "10px", color: "#10b981", fontWeight: 600 } }, "Resultado exacto!") : null
             ),
             p.pred ? h("div", { style: { fontSize: "14px", fontWeight: 800, color: "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", minWidth: "44px", textAlign: "center" } }, `${p.pred.score_a} - ${p.pred.score_b}`) :
@@ -1296,8 +1331,111 @@ function renderLeaderboard() {
     const podiumPts = calcPodiumPts(podiumArr, tournamentState);
     if (podiumPts !== null) total += podiumPts;
     return { ...p, total, scored, exacts, podiumArr, podiumPts };
-  }).sort((a, b) => a.total - b.total);
+  }).sort((a, b) => a.total - b.total || b.exacts - a.exacts);
+
+  // Partition by observer status — observers live in their own section (see observer-members.md)
+  const mainLb = lb.filter(p => !p.is_observer);
+  const obsLb = lb.filter(p => p.is_observer);
+
+  // Dinner-split classification applies only to mainLb (see leaderboard-v0-dinner-split.md)
+  const N = mainLb.length;
+  const T = Math.floor(N / 2);
+  mainLb.forEach((p, i) => { p.dinnerHalf = N >= 2 ? ((i + 1) <= T ? "top" : "bottom") : "neutral"; });
+  // Tied across the cutoff: if rank T and T+1 share (total, exacts), neutralise the tied block
+  if (T >= 1 && N > T) {
+    const a = mainLb[T - 1], b = mainLb[T];
+    if (a.total === b.total && a.exacts === b.exacts) {
+      let lo = T - 1, hi = T;
+      while (lo > 0 && mainLb[lo - 1].total === a.total && mainLb[lo - 1].exacts === a.exacts) lo--;
+      while (hi < N - 1 && mainLb[hi + 1].total === a.total && mainLb[hi + 1].exacts === a.exacts) hi++;
+      for (let i = lo; i <= hi; i++) mainLb[i].dinnerHalf = "neutral";
+    }
+  }
+  // Post-group-stage: possible-rank range + locked classification (skip when N < 2 — no meaningful dinner split)
+  if (tournamentState.groupStageComplete && N >= 2) {
+    mainLb.forEach(p => {
+      const groupTotal = p.total - (p.podiumPts ?? 0);
+      let lockedPP = 0, pending = 0;
+      for (let i = 0; i < 3; i++) {
+        const team = p.podiumArr[i];
+        if (!team || tournamentState.eliminated.has(team)) lockedPP += 20;
+        else pending++;
+      }
+      p.minTotal = groupTotal + lockedPP;
+      p.maxTotal = groupTotal + lockedPP + 20 * pending;
+    });
+    mainLb.forEach(p => {
+      const ahead = mainLb.filter(q => q.id !== p.id && q.maxTotal < p.minTotal).length;
+      const behind = mainLb.filter(q => q.id !== p.id && q.minTotal > p.maxTotal).length;
+      p.bestRank = 1 + ahead;
+      p.worstRank = N - behind;
+      p.locked = p.worstRank <= T ? "green" : p.bestRank > T ? "red" : null;
+    });
+  }
+
   const medals = ["🥇","🥈","🥉"];
+
+  const renderLbRow = (p, i, isObserver) => {
+    const isTop = !isObserver && i < 3;
+    const isExp = state.expanded[p.id];
+    const exactMatches = isExp ? played.filter(m => isExact(state.allPreds[p.id]?.[m.id], m)) : [];
+    const showMedal = !isObserver && medals[i];
+    const classifClass = isObserver ? "lb-row--observer"
+      : p.locked === "green" ? "locked-green"
+      : p.locked === "red" ? "locked-red"
+      : p.dinnerHalf === "top" ? "half-top"
+      : p.dinnerHalf === "bottom" ? "half-bottom"
+      : p.dinnerHalf === "neutral" ? "half-neutral"
+      : "";
+    return h("div", null,
+      h("button", { className: `lb-row ${classifClass} ${isTop ? "top" : ""} ${isExp ? "expanded-top" : ""}`, onClick: () => { const e = { ...state.expanded }; e[p.id] = !e[p.id]; setState({ expanded: e }); } },
+        h("div", { style: { width: "28px", textAlign: "center" } },
+          h("div", { style: { fontSize: showMedal ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)" } }, showMedal ? medals[i] : String(i + 1)),
+          (!isObserver && p.locked) ? h("div", { style: { fontSize: "9px", marginTop: "1px", lineHeight: 1 } }, "🔒") : null
+        ),
+        h("div", { style: { flex: 1 } },
+          h("div", { style: { fontSize: "14px", fontWeight: 700, color: isTop ? "#fff" : "rgba(255,255,255,0.8)" } }, playerLabel(p)),
+          h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.35)", marginTop: "1px" } },
+            `${p.scored} jogos · `, h("span", { style: { color: p.exacts > 0 ? "#10b981" : "rgba(255,255,255,0.25)" } }, `${p.exacts} exacto${p.exacts !== 1 ? "s" : ""} ${p.exacts > 0 ? "✓" : ""}`)),
+          (!isObserver && tournamentState.groupStageComplete && p.bestRank != null) ? h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", marginTop: "1px", fontWeight: 600 } },
+            p.bestRank === p.worstRank ? `Posição final: #${p.bestRank}` : `Possível: #${p.bestRank} – #${p.worstRank}`
+          ) : null
+        ),
+        h("div", { style: { fontSize: "22px", fontWeight: 900, color: isTop ? "#34d399" : "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", letterSpacing: "-1px" } }, String(p.total)),
+        h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.2)" } }, isExp ? "▴" : "▾")
+      ),
+      isExp ? h("div", { className: `lb-expand ${isTop ? "top" : ""}` },
+        exactMatches.length === 0 ? h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.3)", fontStyle: "italic" } }, "Nenhum resultado exacto ainda") :
+        h("div", null,
+          h("div", { style: { fontSize: "11px", fontWeight: 700, color: "#10b981", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Resultados exactos"),
+          ...exactMatches.map(m => h("div", { style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "rgba(255,255,255,0.5)", padding: "3px 0" } },
+            h("span", { style: { color: "#10b981", fontSize: "10px" } }, "✓"),
+            h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, teamWithFlag(m.team_a)),
+            h("span", { style: { fontWeight: 800, color: "#10b981" } }, `${m.score_a}-${m.score_b}`),
+            h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, teamWithFlag(m.team_b))
+          ))
+        ),
+        p.podiumArr.some(t => t) ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.05)" } },
+          h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(251,191,36,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } },
+            p.podiumPts !== null ? `Pódio — ${p.podiumPts} pts` : "Pódio previsto"
+          ),
+          h("div", { style: { display: "flex", gap: "5px" } },
+            ...["🥇","🥈","🥉"].map((medal, mi) => {
+              const predicted = p.podiumArr[mi];
+              const actual = tournamentState.groupStageComplete ? [tournamentState.champion, tournamentState.runnerUp, tournamentState.third] : null;
+              const pPts = actual && predicted ? (tournamentState.eliminated.has(predicted) ? 10 : actual[mi] !== null ? (predicted === actual[mi] ? 0 : actual.filter(Boolean).includes(predicted) ? 5 : 10) : null) : null;
+              const dotColor = pPts === 0 ? "#10b981" : pPts === 5 ? "#fbbf24" : pPts === 10 ? "#ef4444" : "rgba(255,255,255,0.2)";
+              return h("div", { style: { flex: 1, textAlign: "center", padding: "5px 4px", borderRadius: "7px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" } },
+                h("div", { style: { fontSize: "11px", marginBottom: "3px" } }, medal),
+                h("div", { style: { fontSize: "18px", lineHeight: 1 } }, predicted ? (flagOf(predicted) || predicted) : "—"),
+                pPts !== null ? h("div", { style: { fontSize: "10px", fontWeight: 700, color: dotColor, marginTop: "2px" } }, `${pPts}pt`) : null
+              );
+            })
+          )
+        ) : null
+      ) : null
+    );
+  };
 
   return h("div", { className: "content" },
     h("div", { className: "progress-card" },
@@ -1307,65 +1445,43 @@ function renderLeaderboard() {
       ),
       h("div", { className: "progress-track" }, h("div", { className: "progress-fill", style: { width: progress + "%" } }))
     ),
-    h("h2", null, "Classificação"),
-    // Chart
-    h("div", { className: "chart-wrap" },
-      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" } }, "Pontos Acumulados"),
+    h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
+      h("h2", { style: { marginBottom: 0 } }, "Classificação"),
+      state.deadlinePassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
+    ),
+    // Main chart (only if there are non-observers)
+    mainLb.length > 0 ? h("div", { className: "chart-wrap" },
+      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" } }, "Pontos Acumulados"),
+      N >= 2 ? h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.4)", marginBottom: "10px" } },
+        tournamentState.groupStageComplete
+          ? "Verde = metade vencedora · Vermelho = metade que paga o jantar · 🔒 = posição garantida"
+          : "🟢 metade vencedora · 🔴 metade que paga o jantar"
+      ) : null,
       played.length < 2
         ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: "12px", padding: "20px 0" } }, "Disponível após os primeiros jogos")
         : h("div", { style: { height: "200px", position: "relative" } },
             h("canvas", { id: "points-chart" })
           )
-    ),
-    played.length === 0 ? h("div", { style: { textAlign: "center", padding: "40px 20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.") :
-    h("div", null, ...lb.map((p, i) => {
-      const isTop = i < 3;
-      const isExp = state.expanded[p.id];
-      const exactMatches = isExp ? played.filter(m => isExact(state.allPreds[p.id]?.[m.id], m)) : [];
-      return h("div", null,
-        h("button", { className: `lb-row ${isTop ? "top" : ""} ${isExp ? "expanded-top" : ""}`, onClick: () => { const e = { ...state.expanded }; e[p.id] = !e[p.id]; setState({ expanded: e }); } },
-          h("div", { style: { width: "28px", fontSize: medals[i] ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)", textAlign: "center" } }, medals[i] || String(i + 1)),
-          h("div", { style: { flex: 1 } },
-            h("div", { style: { fontSize: "14px", fontWeight: 700, color: isTop ? "#fff" : "rgba(255,255,255,0.8)" } }, p.name),
-            h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.35)", marginTop: "1px" } },
-              `${p.scored} jogos · `, h("span", { style: { color: p.exacts > 0 ? "#10b981" : "rgba(255,255,255,0.25)" } }, `${p.exacts} exacto${p.exacts !== 1 ? "s" : ""} ${p.exacts > 0 ? "✓" : ""}`))
-          ),
-          h("div", { style: { fontSize: "22px", fontWeight: 900, color: isTop ? "#34d399" : "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", letterSpacing: "-1px" } }, String(p.total)),
-          h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.2)" } }, isExp ? "▴" : "▾")
-        ),
-        isExp ? h("div", { className: `lb-expand ${isTop ? "top" : ""}` },
-          exactMatches.length === 0 ? h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.3)", fontStyle: "italic" } }, "Nenhum resultado exacto ainda") :
-          h("div", null,
-            h("div", { style: { fontSize: "11px", fontWeight: 700, color: "#10b981", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Resultados exactos"),
-            ...exactMatches.map(m => h("div", { style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "rgba(255,255,255,0.5)", padding: "3px 0" } },
-              h("span", { style: { color: "#10b981", fontSize: "10px" } }, "✓"),
-              h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, teamWithFlag(m.team_a)),
-              h("span", { style: { fontWeight: 800, color: "#10b981" } }, `${m.score_a}-${m.score_b}`),
-              h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, teamWithFlag(m.team_b))
-            ))
-          ),
-          // Podium section
-          p.podiumArr.some(t => t) ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.05)" } },
-            h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(251,191,36,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } },
-              p.podiumPts !== null ? `Pódio — ${p.podiumPts} pts` : "Pódio previsto"
-            ),
-            h("div", { style: { display: "flex", gap: "5px" } },
-              ...["🥇","🥈","🥉"].map((medal, i) => {
-                const predicted = p.podiumArr[i];
-                const actual = tournamentState.groupStageComplete ? [tournamentState.champion, tournamentState.runnerUp, tournamentState.third] : null;
-                const pPts = actual && predicted ? (tournamentState.eliminated.has(predicted) ? 10 : actual[i] !== null ? (predicted === actual[i] ? 0 : actual.filter(Boolean).includes(predicted) ? 5 : 10) : null) : null;
-                const dotColor = pPts === 0 ? "#10b981" : pPts === 5 ? "#fbbf24" : pPts === 10 ? "#ef4444" : "rgba(255,255,255,0.2)";
-                return h("div", { style: { flex: 1, textAlign: "center", padding: "5px 4px", borderRadius: "7px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" } },
-                  h("div", { style: { fontSize: "11px", marginBottom: "3px" } }, medal),
-                  h("div", { style: { fontSize: "18px", lineHeight: 1 } }, predicted ? (flagOf(predicted) || predicted) : "—"),
-                  pPts !== null ? h("div", { style: { fontSize: "10px", fontWeight: 700, color: dotColor, marginTop: "2px" } }, `${pPts}pt`) : null
-                );
-              })
-            )
-          ) : null
-        ) : null
-      );
-    }))
+    ) : null,
+    // Main rows (or empty state)
+    mainLb.length === 0
+      ? h("div", { style: { textAlign: "center", padding: "30px 20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "Sem classificação — só observadores.")
+      : played.length === 0
+        ? h("div", { style: { textAlign: "center", padding: "40px 20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.")
+        : h("div", null, ...mainLb.map((p, i) => renderLbRow(p, i, false))),
+    // Observadores section (hidden entirely when no observers)
+    obsLb.length > 0 ? h("div", null,
+      h("div", { className: "lb-section-header" }, "Observadores"),
+      played.length >= 2 ? h("div", { className: "chart-wrap" },
+        h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" } }, "Pontos Acumulados"),
+        h("div", { style: { height: "200px", position: "relative" } },
+          h("canvas", { id: "obs-points-chart" })
+        )
+      ) : null,
+      played.length === 0
+        ? h("div", { style: { textAlign: "center", padding: "20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.")
+        : h("div", null, ...obsLb.map((p, i) => renderLbRow(p, i, true)))
+    ) : null
   );
 }
 
@@ -1413,6 +1529,69 @@ function generateReceipt() {
 
   const dateStr = (state.submittedAt || new Date()).toISOString().slice(0, 10);
   XLSX.writeFile(wb, `recibo_${(state.currentPlayer?.name || "jogador").replace(/\s+/g, "_")}_${dateStr}.xlsx`);
+}
+
+function generateAudit() {
+  const tournamentState = computeActualTournamentState();
+  const orderedPlayers = [...state.players].sort((a, b) => slugOf(a).localeCompare(slugOf(b)));
+  const groupMatches = [...state.matches]
+    .filter(m => m.group_letter && m.group_letter.length === 1)
+    .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
+
+  const baseHeader = ["Grupo", "Data", "Equipa A", "Resultado A", "Resultado B", "Equipa B"];
+  const predHeader = orderedPlayers.flatMap(p => [`${slugLabel(p)} A`, `${slugLabel(p)} B`]);
+  const ptsHeader = orderedPlayers.map(p => `${slugLabel(p)} Pontos`);
+  const header = [...baseHeader, ...predHeader, ...ptsHeader];
+
+  const matchRows = groupMatches.map(m => {
+    const result = [m.group_letter, fmtDate(m.kickoff), m.team_a,
+                    m.score_a ?? "", m.score_b ?? "", m.team_b];
+    const preds = orderedPlayers.flatMap(p => {
+      const pred = state.allPreds[p.id]?.[m.id];
+      return [pred?.score_a ?? "", pred?.score_b ?? ""];
+    });
+    const pts = orderedPlayers.map(p => {
+      const pred = state.allPreds[p.id]?.[m.id];
+      return m.score_a !== null && pred ? calcPts(pred, m) : "";
+    });
+    return [...result, ...preds, ...pts];
+  });
+
+  // Podium section
+  const podiumBase = ["Posição", "Equipa Real"];
+  const podiumPredHeader = orderedPlayers.map(p => slugLabel(p));
+  const podiumPtsHeader = orderedPlayers.map(p => `${slugLabel(p)} Pontos`);
+  const podiumHeader = [...podiumBase, ...podiumPredHeader, ...podiumPtsHeader];
+
+  const slotLabels = ["Campeão", "2º Lugar", "3º Lugar"];
+  const actualPodium = [tournamentState.champion, tournamentState.runnerUp, tournamentState.third];
+  const podiumRows = slotLabels.map((label, slotIdx) => {
+    const actual = actualPodium[slotIdx] || "";
+    const picks = orderedPlayers.map(p => {
+      const pod = state.allPodiums[p.id];
+      const podArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
+      return podArr[slotIdx] || "";
+    });
+    const slotPts = orderedPlayers.map(p => {
+      const pod = state.allPodiums[p.id];
+      const podArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
+      const pts = calcPodiumSlotPts(slotIdx, podArr[slotIdx], tournamentState);
+      return pts ?? "";
+    });
+    return [label, actual, ...picks, ...slotPts];
+  });
+
+  const aoa = [
+    header, ...matchRows,
+    [], [],
+    podiumHeader, ...podiumRows
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Resultados");
+  const dateStr = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `goalgut_resultados_${dateStr}.xlsx`);
 }
 
 function importExcel(file) {
@@ -1694,7 +1873,7 @@ function renderIdentityModal() {
             border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)",
             color: "#fff", fontSize: "14px", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", textAlign: "center" },
           onClick: () => { setState({ identityModalOpen: false }); requestBootPin(p); }
-        }, p.name)
+        }, playerLabel(p))
       )
     )
   );
@@ -1777,9 +1956,9 @@ function render() {
   const standingsModal = renderStandingsModal();
   if (standingsModal) app.appendChild(standingsModal);
 
-  // Init chart on leaderboard view
+  // Init charts on leaderboard view (main + observers, where applicable)
   if (state.view === "leaderboard") {
-    setTimeout(() => initChart(), 0);
+    setTimeout(() => initCharts(), 0);
   }
 
   // Auto-scroll to today on predictions view
