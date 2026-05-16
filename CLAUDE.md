@@ -83,7 +83,7 @@ All team names are in Portuguese. Match times are stored in UTC.
 Require `.env` with `SUPABASE_CONNECTION_STRING` and `FOOTBALL_DATA_TOKEN`.
 
 ```bash
-node seed-matches.js      # Insert 72 group-stage matches (ON CONFLICT DO NOTHING — safe to re-run)
+node seed-matches.js      # Insert 72 group-stage matches (idempotent via UNIQUE (group_letter, team_a, team_b, kickoff))
 node seed-knockout.js     # Fetch and insert knockout fixtures from football-data.org
 node fetch-results.js     # Live + finished score poller (run by GitHub Actions)
 node test-api.js          # Smoke-test the football-data.org connection

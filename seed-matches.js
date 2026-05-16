@@ -160,7 +160,7 @@ async function seed() {
       const result = await db.query(
         `INSERT INTO matches (group_letter, team_a, team_b, kickoff, venue, status)
          VALUES ($1, $2, $3, $4, $5, 'scheduled')
-         ON CONFLICT DO NOTHING
+         ON CONFLICT (group_letter, team_a, team_b, kickoff) DO NOTHING
          RETURNING id`,
         [m.group, m.teamA, m.teamB, m.date, m.venue]
       );
