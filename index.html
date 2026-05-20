@@ -274,7 +274,7 @@ function playerLabel(p, short = false) {
   return p.is_observer ? `👀 ${text}` : text;
 }
 
-function slugOf(p) { return p.slug || p.name.replace(/\s+/g, "_").slice(0, 8).toUpperCase(); }
+function slugOf(p) { return p.short_name || p.name.replace(/\s+/g, "_").slice(0, 8).toUpperCase(); }
 function slugLabel(p) { return p.is_observer ? `👀 ${slugOf(p)}` : slugOf(p); }
 
 // ─── FORMATTING ──────────────────────────────────────────────────────
