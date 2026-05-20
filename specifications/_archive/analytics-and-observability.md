@@ -1,5 +1,26 @@
 # Spec: Analytics & Observability
 
+## Status (2026-05-20)
+
+**Shipped for v0:** Phase 1 only (Vercel Web Analytics + `app_events` table + `logEvent()`
+helper + the five instrumented events).
+
+**Deferred to the public edition:** Phases 2–5. Rationale, after stepping back at v0
+go-live: at ~11 friends over ~9 weeks, the marginal value of each remaining phase doesn't
+clear the cost.
+
+- **Phase 2 (pg_cron TTL)** — at this audience size `app_events` won't reach a size
+  Postgres cares about within v0's lifespan. The TTL is a long-lived-table problem and
+  belongs with the public-edition multi-pool work.
+- **Phase 3 (admin view)** — replaces "Pedro runs SQL through MCP to see who's submitted"
+  with a dedicated tab. With one admin and WhatsApp as the nudge channel, the build cost
+  (migration + Edge Function + tab) outweighs the saving. Ship when admin load grows.
+- **Phase 4 (Sentry)** — friends report bugs directly. The `alert("Erro: …")` path is
+  already user-visible. Pull in once the audience can't be relied on to report by hand.
+- **Phase 5 (Clarity)** — spec itself already calls this lowest priority; same logic.
+
+The Phase 2–5 sections below are kept as a head-start for the public-edition rebuild.
+
 ## Problem
 
 The app went live without any visibility into how it's being used. We can't tell whether
