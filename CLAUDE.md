@@ -12,6 +12,7 @@ Before claiming any work is pending, in-flight, or unresolved based on a memory 
 - **Archive specs in the same commit that ships them.** When committing a feature whose spec lives in `specifications/`, move it to `specifications/_archive/`. Top level holds only active/in-flight specs.
 - **Run advisors after Supabase migrations.** After any `mcp__supabase__apply_migration` (or DDL `execute_sql`), call `mcp__supabase__get_advisors` for security and performance; surface findings before declaring done.
 - **Verify mutating scripts before running them.** Read the actual SQL — don't trust "safe to re-run" notes. A project hook auto-snapshots the DB before/after known mutation commands and emits the diff; treat it as a backstop, not a substitute for understanding the script.
+- **Clean up after a merged PR.** Once a feature PR lands on `main` (e.g. `dev → main`), fast-forward local `main` (`git checkout main && git pull origin main`) and delete the merged feature branch locally (`git branch -d <branch>`; the GitHub "delete branch on merge" already removes the remote). Vercel deploys from `main`, so the merge is what actually ships to goalgut.gg — confirm the merge before declaring done. (This is a convention, not a hook — there's no harness event for "PR merged.")
 
 ## Project
 
