@@ -16,17 +16,19 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // Check deadline server-side so the client cannot spoof a post-deadline request
+    // Check the reveal gate server-side so the client cannot spoof a post-reveal request.
+    // Reveal is independent of the submission lock (`submission_deadline`): edits close at
+    // the lock, but everyone's picks only become public at `reveal_at` (first-match kickoff).
     const { data: cfg } = await supabase
       .from('tournament_config')
       .select('value')
-      .eq('key', 'submission_deadline')
+      .eq('key', 'reveal_at')
       .single()
 
-    const deadlinePassed = cfg?.value ? new Date() > new Date(cfg.value) : false
+    const revealPassed = cfg?.value ? new Date() > new Date(cfg.value) : false
 
-    if (deadlinePassed) {
-      // Post-deadline: return all predictions without authentication
+    if (revealPassed) {
+      // Post-reveal: return all predictions without authentication
       const [predsRes, poduimsRes, bracketsRes] = await Promise.all([
         supabase.from('predictions').select('*'),
         supabase.from('podium_predictions').select('*'),
@@ -39,7 +41,7 @@ Deno.serve(async (req) => {
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
-    // Pre-deadline: require player_id + pin
+    // Pre-reveal: require player_id + pin (own-only visibility)
     let body: { player_id?: number; pin?: string } = {}
     try { body = await req.json() } catch (_) { /* empty body is ok */ }
 

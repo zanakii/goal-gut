@@ -282,6 +282,28 @@ function fmtShort(iso) { const d = new Date(iso); return `${d.getDate().toString
 function fmtTime(iso) { const d = new Date(iso); return `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`; }
 function fmtDate(iso) { const wd = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"]; const d = new Date(iso); return `${wd[d.getDay()]} ${fmtShort(iso)} ${fmtTime(iso)}`; }
 
+// Lock/reveal banner shared by the Prognósticos and Fase Final tabs (see
+// specifications/_archive/lock-and-reveal-gates.md). Three states:
+//   pre-lock                 → amber countdown to the submission deadline
+//   locked, pre-reveal       → red "Prazo encerrado" + when everyone's picks reveal
+//   post-reveal              → red "Prazo encerrado" alone
+function renderLockBanner() {
+  if (state.lockPassed) {
+    const revealLine = (!state.revealPassed && state.revealAt)
+      ? h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } },
+          `Os prognósticos de todos serão revelados no início do torneio (${fmtShort(state.revealAt.toISOString())} ${fmtTime(state.revealAt.toISOString())}).`)
+      : null;
+    return h("div", { className: "deadline-banner" },
+      h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
+      revealLine
+    );
+  }
+  return state.lockDeadline
+    ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
+        h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.lockDeadline.toISOString())))
+    : null;
+}
+
 // ─── CHART ───────────────────────────────────────────────────────────
 let chartInstances = { main: null, observers: null };
 
@@ -360,7 +382,7 @@ let state = {
   currentPlayer: null, selectedMatch: null, groupFilter: "all", statusFilter: "all",
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
   expanded: {}, dropdownOpen: false, loading: true, error: null,
-  deadline: null, deadlinePassed: false, actualPodium: null,
+  lockDeadline: null, lockPassed: false, revealAt: null, revealPassed: false, actualPodium: null,
   showPinModal: false, pinValue: "", pinError: false, pinCallback: null, pinCancelCallback: null,
   bootPinPlayerName: null,
   editBracket: {}, allBrackets: {}, bracketSubmitting: false, tiebreaks: {}, showStandingsModal: false,
@@ -401,31 +423,37 @@ async function loadData(silent = false) {
     const [players, matches, config] = await Promise.all([
       sbGet("players", "select=id,name,short_name&order=name"),
       sbGet("matches", "order=kickoff"),
-      sbGet("tournament_config", "key=in.(submission_deadline,actual_podium)")
+      sbGet("tournament_config", "key=in.(submission_deadline,reveal_at,actual_podium)")
     ]);
 
-    // Parse deadline
-    let deadline = null, deadlinePassed = false;
-    const deadlineCfg = config.find(c => c.key === 'submission_deadline');
-    if (deadlineCfg) { deadline = new Date(deadlineCfg.value); deadlinePassed = new Date() > deadline; }
+    // Two independent gates (see specifications/_archive/lock-and-reveal-gates.md):
+    //   lock   = submission_deadline — edits close, visibility unchanged
+    //   reveal = reveal_at           — everyone's picks become public, PIN no longer required
+    const now = new Date();
+    let lockDeadline = null, lockPassed = false;
+    const lockCfg = config.find(c => c.key === 'submission_deadline');
+    if (lockCfg) { lockDeadline = new Date(lockCfg.value); lockPassed = now > lockDeadline; }
+    let revealAt = null, revealPassed = false;
+    const revealCfg = config.find(c => c.key === 'reveal_at');
+    if (revealCfg) { revealAt = new Date(revealCfg.value); revealPassed = now > revealAt; }
     let actualPodium = null;
     const podiumCfg = config.find(c => c.key === 'actual_podium');
     if (podiumCfg) { try { actualPodium = JSON.parse(podiumCfg.value); } catch (_) {} }
 
     let preds = [], podiums = [], brackets = [];
-    if (deadlinePassed) {
-      // Post-deadline: fetch all directly, no auth needed
+    if (revealPassed) {
+      // Post-reveal: fetch everyone's picks directly, no auth needed
       [preds, podiums, brackets] = await Promise.all([
         sbGet("predictions", "select=*"),
         sbGet("podium_predictions", "select=*"),
         sbGet("bracket_predictions", "select=*")
       ]);
     } else if (state.viewerPlayerId && state.viewerPin) {
-      // Pre-deadline, already authenticated: re-fetch own data via edge function
+      // Pre-reveal, already authenticated: re-fetch own data via edge function (own-only)
       const data = await callGetPredictions(state.viewerPlayerId, state.viewerPin);
       preds = data.predictions; podiums = data.podiums; brackets = data.brackets;
     }
-    // else: pre-deadline, not yet authenticated — preds/podiums/brackets stay empty; identity flow triggered below
+    // else: pre-reveal, not yet authenticated — preds/podiums/brackets stay empty; identity flow triggered below
 
     const predMap = {};
     preds.forEach(p => { if (!predMap[p.player_id]) predMap[p.player_id] = {}; predMap[p.player_id][p.match_id] = p; });
@@ -434,8 +462,8 @@ async function loadData(silent = false) {
     const bracketMap = {};
     brackets.forEach(b => { if (!bracketMap[b.player_id]) bracketMap[b.player_id] = {}; bracketMap[b.player_id][`${b.round}-${b.slot}`] = b.picked_team; });
 
-    // Pre-deadline: currentPlayer is always the PIN-verified viewer
-    const cp = (!deadlinePassed && state.viewerPlayerId)
+    // Pre-reveal: currentPlayer is always the PIN-verified viewer
+    const cp = (!revealPassed && state.viewerPlayerId)
       ? (players.find(p => p.id === state.viewerPlayerId) || players[0] || null)
       : (state.currentPlayer || players[0] || null);
 
@@ -450,14 +478,14 @@ async function loadData(silent = false) {
       editBracket: bracketMap[cp?.id] || {},
       tiebreaks: {},
       submitted: Object.keys(myPreds).length > 0, loading: false,
-      deadline, deadlinePassed, actualPodium,
-      authenticated: deadlinePassed || state.authenticated,
+      lockDeadline, lockPassed, revealAt, revealPassed, actualPodium,
+      authenticated: revealPassed || state.authenticated,
       hasBracket: !!podMap[cp?.id], bracketStale: false, predictionsEdited: false,
       submittedAt: Object.keys(myPreds).length > 0 ? (state.submittedAt || new Date(0)) : null
     });
 
-    // Show identity flow if pre-deadline and not yet authenticated
-    if (!deadlinePassed && !state.viewerPlayerId) initiateIdentityFlow();
+    // Show identity flow if pre-reveal and not yet authenticated (PIN gate persists through the lock→reveal window)
+    if (!revealPassed && !state.viewerPlayerId) initiateIdentityFlow();
 
     // Fire app_open once per page-load, after we know who the viewer is.
     if (state.viewerPlayerId && !__appOpenLogged) {
@@ -518,7 +546,7 @@ function requestBootPin(player, showError = false) {
 
 async function submitPredictions() {
   if (state.submitting) return;
-  if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
+  if (state.lockPassed) { alert("O prazo para submissão já passou!"); return; }
   if (state.hasBracket && state.predictionsEdited) {
     if (!confirm("Editaste os prognósticos após submeter a Fase Final. Ao resubmeter, o quadro ficará desatualizado — terás de refazer a Fase Final. Continuar?")) return;
   }
@@ -871,7 +899,7 @@ function clearDownstream(editBracket, round, slot) {
 
 async function submitBracket() {
   if (state.bracketSubmitting) return;
-  if (state.deadlinePassed) { alert("O prazo para submissão já passou!"); return; }
+  if (state.lockPassed) { alert("O prazo para submissão já passou!"); return; }
   requestPin(async (pin) => {
     setState({ bracketSubmitting: true });
     try {
@@ -930,7 +958,7 @@ function renderBracket() {
   const best3rdsAssignment = assignBest3rdsToSlots(best3rds);
 
   const hasBracket = Object.values(state.editBracket).some(t => t);
-  const locked = state.deadlinePassed;
+  const locked = state.lockPassed;
 
   const backBtn = h("button", { onClick: () => navigateTo("predictions"), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Prognósticos");
 
@@ -1065,14 +1093,7 @@ function renderBracket() {
       )
     ),
 
-    locked
-      ? h("div", { className: "deadline-banner" },
-          h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
-          h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão já passou.")
-        )
-      : state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
-          h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
-        ) : null,
+    renderLockBanner(),
     state.bracketStale ? h("div", { style: { background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "12px", padding: "12px 16px", marginBottom: "12px" } },
       h("div", { style: { fontSize: "13px", fontWeight: 700, color: "#ef4444" } }, "⚠️ Prognósticos atualizados"),
       h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.5)", marginTop: "4px" } }, "Alteraste os prognósticos de grupo após submeter a Fase Final. Verifica o quadro e resubmete.")
@@ -1085,10 +1106,11 @@ function renderBracket() {
 }
 
 function navigateTo(newView) {
-  if (state.predictionsEdited && !state.deadlinePassed && state.view === "predictions") {
+  if (state.predictionsEdited && !state.lockPassed && state.view === "predictions") {
     if (!confirm("Tens prognósticos por submeter. Se saíres agora, as alterações serão perdidas. Continuar?")) return;
   }
-  if (!state.deadlinePassed && !state.authenticated && (newView === "predictions" || newView === "bracket")) {
+  // Reveal gate (not lock): the PIN/identity modal must keep firing through the lock→reveal window.
+  if (!state.revealPassed && !state.authenticated && (newView === "predictions" || newView === "bracket")) {
     setState({ identityModalOpen: true });
     return;
   }
@@ -1135,11 +1157,11 @@ function renderHeader() {
       ),
       state.dropdownOpen ? h("div", { className: "player-dropdown" },
         ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, playerLabel(p))),
-        state.viewerPlayerId && !state.deadlinePassed ? h("button", {
+        state.viewerPlayerId && !state.revealPassed ? h("button", {
           style: { borderTop: "1px solid rgba(255,255,255,0.08)" },
           onClick: () => setState({ dropdownOpen: false, showChangePinModal: true, changePinValues: { current: "", next: "", confirm: "" }, changePinError: null })
         }, "🔑 Alterar PIN") : null,
-        !state.deadlinePassed ? h("button", {
+        !state.revealPassed ? h("button", {
           style: { color: "rgba(255,140,100,0.8)", borderTop: state.viewerPlayerId ? "none" : "1px solid rgba(255,255,255,0.08)" },
           onClick: () => {
             localStorage.removeItem('goalgut_player_id');
@@ -1187,7 +1209,7 @@ function renderMatches() {
   return h("div", { className: "content" },
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
       h("h2", { style: { marginBottom: 0 } }, "Jogos"),
-      state.deadlinePassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
+      state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
     ),
     h("div", { className: "filters" },
       ...["all","played","upcoming"].map(s => h("button", { className: `filter-btn ${state.statusFilter === s ? "active" : ""}`, onClick: () => setState({ statusFilter: s }) },
@@ -1292,10 +1314,10 @@ function renderMatchDetail() {
         h("div", { style: { flex: 1, textAlign: "left", fontSize: "16px", fontWeight: 800 } }, teamWithFlag(m.team_b))
       )
     ),
-    state.deadlinePassed || state.authenticated
+    state.revealPassed || state.authenticated
       ? h("div", null,
           h("h3", { style: { fontSize: "15px", fontWeight: 700, marginBottom: "10px" } }, "Prognósticos"),
-          ...(!state.deadlinePassed && state.authenticated
+          ...(!state.revealPassed && state.authenticated
             ? playerData.filter(p => p.id === state.viewerPlayerId)
             : playerData
           ).map((p, i) => h("div", { style: { display: "flex", alignItems: "center", padding: "10px 12px", borderRadius: "10px", background: p.exact ? "rgba(16,185,129,0.08)" : "rgba(255,255,255,0.03)", border: `1px solid ${p.exact ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.05)"}`, gap: "10px", marginBottom: "4px" } },
@@ -1447,7 +1469,7 @@ function renderLeaderboard() {
     ),
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
       h("h2", { style: { marginBottom: 0 } }, "Classificação"),
-      state.deadlinePassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
+      state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
     ),
     // Main chart (only if there are non-observers)
     mainLb.length > 0 ? h("div", { className: "chart-wrap" },
@@ -1723,7 +1745,7 @@ function renderPredictions() {
               const pred = state.editPreds[m.id] || { score_a: 0, score_b: 0 };
               const pts = played ? calcPts(pred, m) : null;
               const ex = played && isExact(pred, m);
-              const locked = played || state.deadlinePassed;
+              const locked = played || state.lockPassed;
 
               const inpA = document.createElement("input");
               inpA.type = "number"; inpA.min = "0"; inpA.max = "20"; inpA.value = pred.score_a;
@@ -1755,17 +1777,10 @@ function renderPredictions() {
         )
       );
     }),
-    // Deadline banner / countdown
-    state.deadlinePassed
-      ? h("div", { className: "deadline-banner" },
-          h("div", { style: { fontSize: "14px", fontWeight: 700, color: "#ef4444" } }, "⏰ Prazo encerrado"),
-          h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" } }, "O prazo para submissão de prognósticos já passou.")
-        )
-      : state.deadline ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
-          h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.deadline.toISOString()))
-        ) : null,
-    // Submit / update button
-    !state.deadlinePassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
+    // Lock/reveal banner / countdown
+    renderLockBanner(),
+    // Submit / update button — hidden once the submission lock passes
+    !state.lockPassed ? h("div", { style: { position: "sticky", bottom: "72px", zIndex: 50, padding: "8px 0" } },
       h("button", { className: "submit-btn", onClick: submitPredictions, disabled: state.submitting, style: state.submitting ? { opacity: 0.6, cursor: "wait" } : {} },
         state.submitting ? "A submeter..." : state.submitted ? "Actualizar Prognósticos" : "Submeter Prognósticos")
     ) : null
@@ -1969,7 +1984,7 @@ function render() {
 
 // ─── INIT ────────────────────────────────────────────────────────────
 window.addEventListener("beforeunload", (e) => {
-  if (state.predictionsEdited && !state.deadlinePassed) {
+  if (state.predictionsEdited && !state.lockPassed) {
     e.preventDefault();
     e.returnValue = "Tens prognósticos por submeter.";
   }
