@@ -277,6 +277,14 @@ function playerLabel(p, short = false) {
 function slugOf(p) { return p.short_name || p.name.replace(/\s+/g, "_").slice(0, 8).toUpperCase(); }
 function slugLabel(p) { return p.is_observer ? `👀 ${slugOf(p)}` : slugOf(p); }
 
+// Playing players first, observers after — each block alphabetical. For surfaces with no
+// natural ranking (dropdown, audit export); the leaderboard does its own ranked split.
+function playersThenObservers(players) {
+  const byName = (a, b) => slugOf(a).localeCompare(slugOf(b), "pt");
+  return [...players.filter(p => !p.is_observer).sort(byName),
+          ...players.filter(p => p.is_observer).sort(byName)];
+}
+
 // ─── FORMATTING ──────────────────────────────────────────────────────
 // Bare timestamps from DB (no tz suffix) are UTC — force Z so they aren't
 // misread as local time when the browser is not in UTC.
@@ -483,10 +491,15 @@ async function loadData(silent = false) {
     const bracketMap = {};
     brackets.forEach(b => { if (!bracketMap[b.player_id]) bracketMap[b.player_id] = {}; bracketMap[b.player_id][`${b.round}-${b.slot}`] = b.picked_team; });
 
-    // Pre-reveal: currentPlayer is always the PIN-verified viewer
+    // Pre-reveal: currentPlayer is always the PIN-verified viewer.
+    // Post-reveal: default to the remembered player (their pre-reveal identity, or the
+    // last one they manually selected) so everyone but GON isn't forced to re-pick on every visit.
+    const storedViewId = parseInt(localStorage.getItem('goalgut_player_id') || '', 10);
     const cp = (!revealPassed && state.viewerPlayerId)
       ? (players.find(p => p.id === state.viewerPlayerId) || players[0] || null)
-      : (state.currentPlayer || players[0] || null);
+      : (state.currentPlayer
+         || (storedViewId && players.find(p => p.id === storedViewId))
+         || players[0] || null);
 
     const myPreds = predMap[cp?.id] || {};
     const myPodium = podMap[cp?.id];
@@ -517,6 +530,9 @@ async function loadData(silent = false) {
 }
 
 function switchPlayer(p) {
+  // Post-reveal, remember the viewed player so it survives reloads (no PIN flow to set this).
+  // Pre-reveal, goalgut_player_id is the PIN identity — don't clobber it just from viewing.
+  if (state.revealPassed) localStorage.setItem('goalgut_player_id', String(p.id));
   const myPreds = state.allPreds[p.id] || {};
   const myPodium = state.allPodiums[p.id];
   const editPreds = {};
@@ -1177,7 +1193,7 @@ function renderHeader() {
         (cp?.name?.split(" ")[0] || "Jogador") + " ▾"
       ),
       state.dropdownOpen ? h("div", { className: "player-dropdown" },
-        ...state.players.map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, playerLabel(p))),
+        ...playersThenObservers(state.players).map(p => h("button", { className: cp?.id === p.id ? "sel" : "", onClick: () => switchPlayer(p) }, playerLabel(p))),
         state.viewerPlayerId && !state.revealPassed ? h("button", {
           style: { borderTop: "1px solid rgba(255,255,255,0.08)" },
           onClick: () => setState({ dropdownOpen: false, showChangePinModal: true, changePinValues: { current: "", next: "", confirm: "" }, changePinError: null })
@@ -1576,7 +1592,7 @@ function generateReceipt() {
 
 function generateAudit() {
   const tournamentState = computeActualTournamentState();
-  const orderedPlayers = [...state.players].sort((a, b) => slugOf(a).localeCompare(slugOf(b)));
+  const orderedPlayers = playersThenObservers(state.players);
   const groupMatches = [...state.matches]
     .filter(m => m.group_letter && m.group_letter.length === 1)
     .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
@@ -1903,7 +1919,7 @@ function renderIdentityModal() {
       h("div", { style: { fontSize: "15px", fontWeight: 700, color: "#fff", marginBottom: "4px" } }, "Quem és tu?"),
       h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.4)", marginBottom: "16px" } },
         "Identifica-te para aceder aos teus prognósticos"),
-      ...state.players.map(p =>
+      ...playersThenObservers(state.players).map(p =>
         h("button", {
           style: { display: "block", width: "100%", padding: "10px 16px", margin: "4px 0", borderRadius: "10px",
             border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)",
