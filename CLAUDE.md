@@ -31,6 +31,7 @@ GitHub Secrets: `FOOTBALL_DATA_TOKEN`, `SUPABASE_URL`, `SUPABASE_KEY` (service r
 
 ## Gotchas
 
+- **A `git push` to `main` does NOT guarantee a live deploy.** Vercel auto-deploys from `main` via the GitHub integration, but that integration's auth can silently lapse (it did on 2026-06-06 — a stale token stranded two commits un-deployed while pushes kept succeeding). After pushing user-facing changes, **verify the live site actually updated** — `curl -sL https://goalgut.gg/ | grep -c <a-string-unique-to-your-change>` (the apex 307-redirects to `www.goalgut.gg`, so use `-L`). If it's stale, deploy manually: `npx vercel --prod` (needs `vercel login` + `vercel link` to the `goal-gut` project first). Then fix the root cause in the Vercel dashboard → Settings → Git.
 - **Edge Functions are NOT auto-deployed.** After editing `supabase/functions/<name>/`, run `supabase functions deploy <name>`.
 - **All team names are in Portuguese** (`Brasil`, `Países Baixos`, etc.). `team-map.js` maps football-data.org English names to the DB form.
 - **Bracket picks (`bracket_predictions`) do not score independently.** The knockout bracket is a UX device for drafting the path to the 1-2-3 podium pick — that's what `calcPodiumPts` scores.
