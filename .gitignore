@@ -32,3 +32,4 @@ pids/
 
 # Claude hook scratch files (DB snapshot diffs)
 .claude/.snapshot-*.txt
+.vercel
