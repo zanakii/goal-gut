@@ -92,7 +92,7 @@ async function supabasePatch(matchId, scoreA, scoreB, status) {
 // midnight, plus any match that's currently live regardless of kickoff.
 async function getPendingNow() {
   const now = new Date();
-  const fromIso = new Date(now.getTime() - 4 * 3600 * 1000).toISOString();
+  const fromIso = new Date(now.getTime() - 30 * 3600 * 1000).toISOString();
   const toIso = new Date(now.getTime() + 24 * 3600 * 1000).toISOString();
   const r = await fetch(
     `${SUPABASE_URL}/rest/v1/matches?kickoff=gte.${fromIso}&kickoff=lt.${toIso}&status=in.(scheduled,live)&select=id,team_a,team_b,score_a,score_b,status`,
@@ -114,8 +114,9 @@ async function main() {
   console.log(`${pending.length} pending match(es) in window.`);
 
   const today = new Date().toISOString().split("T")[0];
+  const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().split("T")[0];
   const r = await fetch(
-    `https://api.football-data.org/v4/competitions/WC/matches?dateFrom=${today}&dateTo=${today}`,
+    `https://api.football-data.org/v4/competitions/WC/matches?dateFrom=${yesterday}&dateTo=${today}`,
     { headers: { "X-Auth-Token": FOOTBALL_DATA_TOKEN } }
   );
   if (!r.ok) {
