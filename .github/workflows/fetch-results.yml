@@ -16,11 +16,8 @@ name: Fetch WC Results
 
 on:
   schedule:
-    # Every 2 min, 4PM-11PM UTC (afternoon/evening kickoffs)
-    - cron: '*/2 16-23 * 6,7 *'
-    # Every 2 min, 12AM-7AM UTC (covers AET/penalties on late kickoffs)
-    - cron: '*/2 0-6 * 6,7 *'
-  workflow_dispatch: # Manual trigger for testing
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   fetch:
