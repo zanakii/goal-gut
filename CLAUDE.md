@@ -25,15 +25,16 @@ This is the **v0** edition — deliberately simple, single-pool. Do not refactor
 - `index.html` — entire frontend (vanilla JS + CSS, no framework, no build step)
 - Supabase — PostgreSQL + Edge Functions (project `thjvoocszfzqkyatkevv`, region `eu-west-1`)
 - Vercel — static hosting, auto-deploys from `main`
-- GitHub Actions — `fetch-results.yml`, every 2 min during match hours, June–July 2026
+- Live results — Supabase `pg_cron` (every minute, June/July) → `pg_net` → the `poll-results` Edge Function, pairing on the seeded `matches.fd_match_id`. Replaced the GitHub Actions `fetch-results.yml` poller (removed 2026-06-15; see `_archive/reliable-live-results-pipeline.md`).
 
-GitHub Secrets: `FOOTBALL_DATA_TOKEN`, `SUPABASE_URL`, `SUPABASE_KEY` (service role).
+Edge Function secrets (Dashboard → Edge Functions → Secrets): `FOOTBALL_DATA_TOKEN`, `CRON_SECRET` (the latter also stored in Vault as `poll_results_cron_secret`, sent by the cron job as the `x-cron-secret` header). `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` are auto-injected.
 
 ## Gotchas
 
 - **A `git push` to `main` does NOT guarantee a live deploy.** Vercel auto-deploys from `main` via the GitHub integration, but that integration's auth can silently lapse (it did on 2026-06-06 — a stale token stranded two commits un-deployed while pushes kept succeeding). After pushing user-facing changes, **verify the live site actually updated** — `curl -sL https://goalgut.gg/ | grep -c <a-string-unique-to-your-change>` (the apex 307-redirects to `www.goalgut.gg`, so use `-L`). If it's stale, deploy manually: `npx vercel --prod` (needs `vercel login` + `vercel link` to the `goal-gut` project first). Then fix the root cause in the Vercel dashboard → Settings → Git.
-- **Edge Functions are NOT auto-deployed.** After editing `supabase/functions/<name>/`, run `supabase functions deploy <name>`.
-- **All team names are in Portuguese** (`Brasil`, `Países Baixos`, etc.). `team-map.js` maps football-data.org English names to the DB form.
+- **Edge Functions are NOT auto-deployed.** After editing `supabase/functions/<name>/`, run `supabase functions deploy <name>` (or deploy via the Supabase MCP — the CLI isn't installed locally).
+- **The live-results poller is `poll-results`, paired by id not name.** It matches upstream fixtures to our rows on `matches.fd_match_id` (seeded once via `seed-fd-ids.js` + the kickoff/team cross-ref; knockout rows still need seeding when added). It is cron-only — invoke manually with `curl -H 'x-cron-secret: <CRON_SECRET>' <fn-url>`. Pause/resume the whole pipeline with `select cron.unschedule('poll-results')` / re-`cron.schedule`.
+- **All team names are in Portuguese** (`Brasil`, `Países Baixos`, etc.). `team-map.js` maps football-data.org English names to the DB form — now used only by `seed-knockout.js` (the live poller no longer translates names).
 - **Bracket picks (`bracket_predictions`) do not score independently.** The knockout bracket is a UX device for drafting the path to the 1-2-3 podium pick — that's what `calcPodiumPts` scores.
 - **Scoring lives in `calcPts` / `calcPodiumPts` / `calcPodiumSlotPts` in `index.html`.** Single source of truth — do not duplicate; `badgeColor` thresholds are calibrated to this scale.
 - **Score-display invariant:** `m.score_a !== null` means "show this score"; `isFinal(m)` means "match is over — lock bracket/elimination logic on it".
