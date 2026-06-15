@@ -20,7 +20,9 @@ module.exports = {
   'Iran': 'Irão', 'IR Iran': 'Irão',
   'Egypt': 'Egito',
   'New Zealand': 'Nova Zelândia', 'Spain': 'Espanha', 'Uruguay': 'Uruguai',
-  'Saudi Arabia': 'Arábia Saudita', 'Cape Verde': 'Cabo Verde',
+  'Saudi Arabia': 'Arábia Saudita',
+  // football-data.org returns "Cape Verde Islands"; keep the short form as an alias too.
+  'Cape Verde': 'Cabo Verde', 'Cape Verde Islands': 'Cabo Verde',
   'France': 'França', 'Senegal': 'Senegal', 'Norway': 'Noruega', 'Iraq': 'Iraque',
   'Argentina': 'Argentina', 'Austria': 'Áustria', 'Algeria': 'Argélia', 'Jordan': 'Jordânia',
   'Portugal': 'Portugal', 'Colombia': 'Colômbia', 'Uzbekistan': 'Uzbequistão',
