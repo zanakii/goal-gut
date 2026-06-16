@@ -711,12 +711,11 @@ function computeStandings(matches, getScore) {
   });
   return result;
 }
-function computeGroupStandings() {
-  return computeStandings(state.matches, m => ({ sa: m.score_a, sb: m.score_b }));
-}
 
 // Derives actual tournament state from real match results.
 // Knockout matches are seeded via seed-knockout.js after group stage ends.
+// "Eliminated" means a team can no longer finish on the podium (4th or worse) —
+// it locks a podium pick to 20 before the final positions are known.
 function computeActualTournamentState() {
   const eliminated = new Set();
   let champion = null, runnerUp = null, third = null;
@@ -725,18 +724,20 @@ function computeActualTournamentState() {
   const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => isFinal(m));
   if (!groupStageComplete) return { champion, runnerUp, third, eliminated, groupStageComplete: false };
 
-  // Group-stage: teams finishing 3rd/4th that don't qualify as best 3rd are eliminated
-  const standings = computeGroupStandings();
-  const all3rds = Object.entries(standings)
-    .map(([grp, s]) => s[2] ? { team: s[2].team, group: grp, pts: s[2].pts, gd: s[2].gd, gf: s[2].gf } : null)
-    .filter(Boolean)
-    .sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
-  const qualifiedThirds = new Set(all3rds.slice(0, 8).map(t => t.team));
-  Object.values(standings).forEach(sorted => {
-    sorted.forEach((t, i) => { if (i >= 2 && !qualifiedThirds.has(t.team)) eliminated.add(t.team); });
-  });
+  // Rule 1 — group non-qualifiers. The seeded R32 is the factual record of who advanced;
+  // any group-stage team absent from it is out. Guarded on a full R32 (16 matches) so a
+  // partial seed never flags a real qualifier. (Beats re-deriving FIFA's best-8-thirds in JS.)
+  const r32 = state.matches.filter(m => m.group_letter === 'R32');
+  if (r32.length >= 16) {
+    const qualified = new Set();
+    r32.forEach(m => { if (m.team_a) qualified.add(m.team_a); if (m.team_b) qualified.add(m.team_b); });
+    const groupTeams = new Set();
+    groupMatches.forEach(m => { groupTeams.add(m.team_a); groupTeams.add(m.team_b); });
+    groupTeams.forEach(t => { if (!qualified.has(t)) eliminated.add(t); });
+  }
 
-  // R32 → QF: losers are eliminated immediately
+  // Rule 2 — knockout losers. SF is excluded (loser drops to the 3rd-place match, can still
+  // take bronze); the final's loser is the runner-up (on the podium) — so neither is eliminated.
   ['R32', 'R16', 'QF'].forEach(stage => {
     state.matches.filter(m => m.group_letter === stage).forEach(m => {
       const w = matchWinner(m);
@@ -744,20 +745,14 @@ function computeActualTournamentState() {
     });
   });
 
-  // SF losers go to 3rd place match — not eliminated yet
-  state.matches.filter(m => m.group_letter === 'SF').forEach(m => {
-    const w = matchWinner(m);
-    if (w) eliminated.delete(w === m.team_a ? m.team_b : m.team_a);
-  });
-
-  // 3rd place match
+  // 3rd place match: winner = third (podium), loser eliminated (4th)
   const thirdMatch = state.matches.find(m => m.group_letter === '3P');
   if (thirdMatch) {
     const w = matchWinner(thirdMatch);
     if (w) { third = w; eliminated.add(w === thirdMatch.team_a ? thirdMatch.team_b : thirdMatch.team_a); }
   }
 
-  // Final
+  // Final: winner = champion, loser = runner-up (both on the podium, neither eliminated)
   const finalMatch = state.matches.find(m => m.group_letter === 'F');
   if (finalMatch) {
     const w = matchWinner(finalMatch);
@@ -1502,13 +1497,12 @@ function renderLeaderboard() {
           h("div", { style: { display: "flex", gap: "5px" } },
             ...["🥇","🥈","🥉"].map((medal, mi) => {
               const predicted = p.podiumArr[mi];
-              const actual = tournamentState.groupStageComplete ? [tournamentState.champion, tournamentState.runnerUp, tournamentState.third] : null;
-              const pPts = actual && predicted ? (tournamentState.eliminated.has(predicted) ? 10 : actual[mi] !== null ? (predicted === actual[mi] ? 0 : actual.filter(Boolean).includes(predicted) ? 5 : 10) : null) : null;
-              const dotColor = pPts === 0 ? "#10b981" : pPts === 5 ? "#fbbf24" : pPts === 10 ? "#ef4444" : "rgba(255,255,255,0.2)";
+              const pPts = calcPodiumSlotPts(mi, predicted, tournamentState); // canonical 0 | 10 | 20 | null
+              const dotColor = pPts === 0 ? "#10b981" : pPts === 10 ? "#fbbf24" : pPts === 20 ? "#ef4444" : "rgba(255,255,255,0.2)";
               return h("div", { style: { flex: 1, textAlign: "center", padding: "5px 4px", borderRadius: "7px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" } },
                 h("div", { style: { fontSize: "11px", marginBottom: "3px" } }, medal),
                 h("div", { style: { fontSize: "18px", lineHeight: 1 } }, predicted ? (flagOf(predicted) || predicted) : "—"),
-                pPts !== null ? h("div", { style: { fontSize: "10px", fontWeight: 700, color: dotColor, marginTop: "2px" } }, `${pPts}pt`) : null
+                pPts !== null ? h("div", { style: { fontSize: "10px", fontWeight: 700, color: dotColor, marginTop: "2px" } }, `${pPts}pts`) : null
               );
             })
           )

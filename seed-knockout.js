@@ -100,6 +100,7 @@ async function main() {
       team_a: teamA,
       team_b: teamB,
       kickoff: m.utcDate,
+      fd_match_id: m.id,        // pair key for poll-results; without it KO scores never land
       venue: "",
       status: "scheduled"
     };
