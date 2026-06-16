@@ -6,6 +6,7 @@
 <title>Prognósticos WC 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -334,7 +335,10 @@ function renderLockBanner() {
 }
 
 // ─── CHART ───────────────────────────────────────────────────────────
-let chartInstances = { main: null };
+let chartInstances = { main: null, bar: null };
+// Rank-sorted players + tournament state for the post-group podium bar chart, stashed by
+// renderLeaderboard and read by buildPodiumBarChart (avoids re-deriving standings).
+let podiumBarData = null;
 
 const PLAYER_COLORS = ["#34d399","#06b6d4","#f59e0b","#f472b6","#a78bfa","#fb923c","#60a5fa","#e2e8f0"];
 
@@ -344,8 +348,10 @@ function buildChart(canvasId, players, instanceKey) {
   if (chartInstances[instanceKey]) { chartInstances[instanceKey].destroy(); chartInstances[instanceKey] = null; }
   if (players.length === 0) return;
 
+  // Group matches only — the line chart is the group-stage record. Once knockout rows get
+  // scored they'd otherwise add a meaningless flat tail (no KO score-predictions in v0).
   const played = state.matches
-    .filter(m => m.score_a !== null)
+    .filter(m => m.score_a !== null && m.group_letter && m.group_letter.length === 1)
     .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
 
   const dates = [...new Set(played.map(m => m.kickoff.split("T")[0]))].sort();
@@ -422,8 +428,100 @@ function buildChart(canvasId, players, instanceKey) {
   });
 }
 
+// Post-group-stage stacked bar chart: base = group points, + one segment per resolved podium
+// pick (canonical calcPodiumSlotPts: +20 eliminated/off-podium, +10 wrong slot, +0 exact).
+// Golf scoring — taller = worse, shortest bar leads. Reads podiumBarData (set by renderLeaderboard).
+function buildPodiumBarChart(canvasId, instanceKey) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  if (chartInstances[instanceKey]) { chartInstances[instanceKey].destroy(); chartInstances[instanceKey] = null; }
+  const d = podiumBarData;
+  if (!d || !d.players.length) return;
+  const players = d.players, ts = d.ts;
+  const MEDALS = ["🥇","🥈","🥉"];
+  const groupTotalOf = p => p.total - (p.podiumPts ?? 0);
+
+  const slotDataset = mi => ({
+    label: MEDALS[mi],
+    stack: "s",
+    data: players.map(p => { const v = calcPodiumSlotPts(mi, p.podiumArr[mi], ts); return v == null ? 0 : v; }),
+    backgroundColor: players.map(p => {
+      const v = calcPodiumSlotPts(mi, p.podiumArr[mi], ts);
+      const a = p.is_observer ? 0.28 : 0.6;
+      return v === 20 ? `rgba(239,68,68,${a})` : v === 10 ? `rgba(251,191,36,${a})` : "transparent";
+    }),
+    datalabels: {
+      display: ctx => ctx.dataset.data[ctx.dataIndex] >= 10,   // only 10/20 segments are tall enough
+      formatter: (_v, ctx) => flagOf(players[ctx.dataIndex].podiumArr[mi]) || "",
+      color: "rgba(255,255,255,0.95)", font: { size: 11 }
+    }
+  });
+
+  const datasets = [
+    { label: "Fase de grupos", stack: "s", data: players.map(groupTotalOf),
+      backgroundColor: players.map(p => p.is_observer ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.2)"),
+      datalabels: { display: false } },
+    slotDataset(0), slotDataset(1), slotDataset(2)
+  ];
+
+  // Y-axis floor just below the leader (not 0) so differences and leaps read clearly.
+  const minTotal = Math.min(...players.map(p => p.total));
+  const yMin = Math.max(0, minTotal - 10);
+
+  // Dinner-cutoff band: shade from the first paying player (rank T+1) upward, non-observers only.
+  const compTotals = players.filter(p => !p.is_observer).map(p => p.total).sort((a, b) => a - b);
+  const cutoff = compTotals.length >= 2 ? compTotals[Math.floor(compTotals.length / 2)] : null;
+  const cutoffBand = {
+    id: "cutoffBand",
+    beforeDatasetsDraw(chart) {
+      if (cutoff == null) return;
+      const { ctx, chartArea, scales } = chart;
+      const y = scales.y.getPixelForValue(cutoff);
+      if (y >= chartArea.bottom) return;
+      ctx.save();
+      ctx.fillStyle = "rgba(239,68,68,0.10)";
+      ctx.fillRect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, Math.max(0, y - chartArea.top));
+      ctx.restore();
+    }
+  };
+
+  const plugins = [cutoffBand].concat(typeof ChartDataLabels !== "undefined" ? [ChartDataLabels] : []);
+
+  chartInstances[instanceKey] = new Chart(canvas, {
+    type: "bar",
+    data: { labels: players.map(p => playerLabel(p, true)), datasets },
+    plugins,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const p = players[ctx.dataIndex];
+              if (ctx.datasetIndex === 0) return `Fase de grupos: ${groupTotalOf(p)}`;
+              const mi = ctx.datasetIndex - 1, team = p.podiumArr[mi];
+              if (!team) return `${MEDALS[mi]} (sem escolha) +20`;
+              const v = calcPodiumSlotPts(mi, team, ts);
+              if (v == null) return `${MEDALS[mi]} ${team} — por decidir`;
+              return `${MEDALS[mi]} ${team} — ${v === 0 ? "exacto" : v === 10 ? "lugar errado" : "fora do pódio"} (+${v})`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: "rgba(255,255,255,0.5)", font: { size: 10 } }, grid: { display: false } },
+        y: { stacked: true, min: yMin, ticks: { color: "rgba(255,255,255,0.4)", font: { size: 10 } },
+          grid: { color: "rgba(255,255,255,0.04)" }, title: { display: true, text: "Pontos", color: "rgba(255,255,255,0.3)", font: { size: 10 } } }
+      }
+    }
+  });
+}
+
 function initCharts() {
   buildChart("points-chart", state.players, "main");
+  buildPodiumBarChart("podium-bar-chart", "bar");
 }
 
 // ─── STATE ───────────────────────────────────────────────────────────
@@ -1665,6 +1763,28 @@ function renderLeaderboard() {
     );
   };
 
+  // Post-group: bar chart leads (grupos + pódio); line chart relocates to the bottom, frozen
+  // to the group stage. Pre-group: line chart stays at the top as today.
+  podiumBarData = { players: [...mainLb, ...obsLb], ts: tournamentState };
+
+  const lineChartWrap = lb.length > 0 ? h("div", { className: "chart-wrap" },
+    h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" } }, "Pontos Acumulados"),
+    N >= 2 ? h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.4)", marginBottom: "10px" } },
+      "🔴 zona que paga o jantar — abaixo da zona vermelha estás a salvo (observadores 👀 não contam)"
+    ) : null,
+    played.length < 2
+      ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: "12px", padding: "20px 0" } }, "Disponível após os primeiros jogos")
+      : h("div", { style: { height: "200px", position: "relative" } }, h("canvas", { id: "points-chart" }))
+  ) : null;
+
+  const barChartWrap = lb.length > 0 ? h("div", { className: "chart-wrap" },
+    h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" } }, "Pontos: grupos + pódio"),
+    h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.4)", marginBottom: "10px" } },
+      "🔴 zona que paga o jantar · barra mais curta lidera · cada eliminação do pódio soma 20 (observadores 👀 não contam)"
+    ),
+    h("div", { style: { height: "220px", position: "relative" } }, h("canvas", { id: "podium-bar-chart" }))
+  ) : null;
+
   return h("div", { className: "content" },
     h("div", { className: "progress-card" },
       h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "8px" } },
@@ -1677,18 +1797,8 @@ function renderLeaderboard() {
       h("h2", { style: { marginBottom: 0 } }, "Classificação"),
       state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
     ),
-    // Main chart (all players; observers share the chart as dashed lines)
-    lb.length > 0 ? h("div", { className: "chart-wrap" },
-      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" } }, "Pontos Acumulados"),
-      N >= 2 ? h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.4)", marginBottom: "10px" } },
-        "🔴 zona que paga o jantar — abaixo da zona vermelha estás a salvo (observadores 👀 não contam)"
-      ) : null,
-      played.length < 2
-        ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: "12px", padding: "20px 0" } }, "Disponível após os primeiros jogos")
-        : h("div", { style: { height: "200px", position: "relative" } },
-            h("canvas", { id: "points-chart" })
-          )
-    ) : null,
+    // Top chart: bar (grupos + pódio) leads post-group; line chart pre-group as before
+    tournamentState.groupStageComplete ? barChartWrap : lineChartWrap,
     // Game-day highlights — "Desde [data]" (position changes + fun facts)
     gd && gameFacts.length > 0 ? h("div", { style: { background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)", borderRadius: "14px", padding: "12px 14px", marginBottom: "20px", animation: "fadeIn 0.3s ease" } },
       h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" } }, `Desde ${fmtShort(new Date(gd.A).toISOString())}`),
@@ -1709,7 +1819,9 @@ function renderLeaderboard() {
       played.length === 0
         ? h("div", { style: { textAlign: "center", padding: "20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.")
         : h("div", null, ...obsLb.map((p, i) => renderLbRow(p, i, true)))
-    ) : null
+    ) : null,
+    // Group-stage line chart, relocated to the bottom once the bar chart leads
+    tournamentState.groupStageComplete ? lineChartWrap : null
   );
 }
 
