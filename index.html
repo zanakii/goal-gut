@@ -716,18 +716,21 @@ function computeStandings(matches, getScore) {
 // Knockout matches are seeded via seed-knockout.js after group stage ends.
 // "Eliminated" means a team can no longer finish on the podium (4th or worse) —
 // it locks a podium pick to 20 before the final positions are known.
-function computeActualTournamentState() {
+// `asOf` (ms) computes the state *as it stood* at a past instant — counting only matches
+// that had kicked off before the cutoff. Defaults to now (Infinity = every match).
+function computeActualTournamentState(asOf = Infinity) {
+  const inWindow = m => parseAsUTC(m.kickoff).getTime() < asOf;
   const eliminated = new Set();
   let champion = null, runnerUp = null, third = null;
 
-  const groupMatches = state.matches.filter(m => m.group_letter && m.group_letter.length === 1);
+  const groupMatches = state.matches.filter(m => m.group_letter && m.group_letter.length === 1 && inWindow(m));
   const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => isFinal(m));
   if (!groupStageComplete) return { champion, runnerUp, third, eliminated, groupStageComplete: false };
 
   // Rule 1 — group non-qualifiers. The seeded R32 is the factual record of who advanced;
   // any group-stage team absent from it is out. Guarded on a full R32 (16 matches) so a
   // partial seed never flags a real qualifier. (Beats re-deriving FIFA's best-8-thirds in JS.)
-  const r32 = state.matches.filter(m => m.group_letter === 'R32');
+  const r32 = state.matches.filter(m => m.group_letter === 'R32' && inWindow(m));
   if (r32.length >= 16) {
     const qualified = new Set();
     r32.forEach(m => { if (m.team_a) qualified.add(m.team_a); if (m.team_b) qualified.add(m.team_b); });
@@ -739,34 +742,154 @@ function computeActualTournamentState() {
   // Rule 2 — knockout losers. SF is excluded (loser drops to the 3rd-place match, can still
   // take bronze); the final's loser is the runner-up (on the podium) — so neither is eliminated.
   ['R32', 'R16', 'QF'].forEach(stage => {
-    state.matches.filter(m => m.group_letter === stage).forEach(m => {
+    state.matches.filter(m => m.group_letter === stage && inWindow(m)).forEach(m => {
       const w = matchWinner(m);
       if (w) eliminated.add(w === m.team_a ? m.team_b : m.team_a);
     });
   });
 
   // 3rd place match: winner = third (podium), loser eliminated (4th)
-  const thirdMatch = state.matches.find(m => m.group_letter === '3P');
+  const thirdMatch = state.matches.find(m => m.group_letter === '3P' && inWindow(m));
   if (thirdMatch) {
     const w = matchWinner(thirdMatch);
     if (w) { third = w; eliminated.add(w === thirdMatch.team_a ? thirdMatch.team_b : thirdMatch.team_a); }
   }
 
   // Final: winner = champion, loser = runner-up (both on the podium, neither eliminated)
-  const finalMatch = state.matches.find(m => m.group_letter === 'F');
+  const finalMatch = state.matches.find(m => m.group_letter === 'F' && inWindow(m));
   if (finalMatch) {
     const w = matchWinner(finalMatch);
     if (w) { champion = w; runnerUp = w === finalMatch.team_a ? finalMatch.team_b : finalMatch.team_a; }
   }
 
-  // Fallback: manual actual_podium from tournament_config (covers PEN edge cases)
-  if (!champion && state.actualPodium?.first_place) {
+  // Fallback: manual actual_podium from tournament_config (covers PEN edge cases).
+  // Current state only — never back-applied to a historical cutoff.
+  if (asOf === Infinity && !champion && state.actualPodium?.first_place) {
     champion = state.actualPodium.first_place;
     runnerUp = state.actualPodium.second_place;
     third = third || state.actualPodium.third_place;
   }
 
   return { champion, runnerUp, third, eliminated, groupStageComplete: true };
+}
+
+// ─── GAME-DAY POSITION CHANGES ───────────────────────────────────────
+// A "game day" runs 09:00 Lisbon → 09:00 Lisbon so a full night of matches is one day
+// (the slate runs over the European night; 07:00–18:00 Lisbon is the dead zone). The whole
+// tournament is in Lisbon summer time (WEST = UTC+1), so the rollover is a constant 08:00 UTC.
+const GAME_DAY_ROLLOVER_UTC_HOUR = 8;
+const koMs = m => parseAsUTC(m.kickoff).getTime();
+
+// The 09:00-Lisbon instant that opens the game day a given time belongs to.
+function gameDayStart(ms) {
+  const d = new Date(ms);
+  const boundary = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), GAME_DAY_ROLLOVER_UTC_HOUR);
+  return ms >= boundary ? boundary : boundary - 24 * 3600 * 1000;
+}
+
+// The most recent *completed* game day that actually had finished matches (empty days skipped).
+function lastCompletedGameDay(now) {
+  const starts = [...new Set(state.matches.filter(isFinal).map(m => gameDayStart(koMs(m))))]
+    .filter(start => now >= start + 24 * 3600 * 1000)   // window fully closed
+    .sort((a, b) => a - b);
+  if (!starts.length) return null;
+  const A = starts[starts.length - 1];
+  // Need a real prior standing: skip the very first game day (baseline would be everyone at 0).
+  if (!state.matches.some(m => isFinal(m) && koMs(m) < A)) return null;
+  return { A, B: A + 24 * 3600 * 1000 };
+}
+
+// Standings as they stood at `cutoff` (ms): counts matches finished with kickoff < cutoff,
+// plus podium points from the tournament state as of that cutoff. Derived, not stored.
+function standingsAsOf(cutoff) {
+  const ts = computeActualTournamentState(cutoff);
+  return state.players.map(p => {
+    let total = 0, exacts = 0;
+    state.matches.forEach(m => {
+      if (!isFinal(m) || koMs(m) >= cutoff) return;
+      const pred = state.allPreds[p.id]?.[m.id];
+      const pts = calcPts(pred, m);
+      if (pts !== null) { total += pts; if (isExact(pred, m)) exacts++; }
+    });
+    const pod = state.allPodiums[p.id];
+    const podiumArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
+    const podiumPts = calcPodiumPts(podiumArr, ts);
+    if (podiumPts !== null) total += podiumPts;
+    return { id: p.id, name: p.name, is_observer: p.is_observer, total, exacts };
+  });
+}
+
+// Ranks (per pool) and dinner-half (non-observers) as of a cutoff.
+function boardAsOf(cutoff) {
+  const rows = standingsAsOf(cutoff).sort((a, b) => a.total - b.total || b.exacts - a.exacts);
+  const main = rows.filter(p => !p.is_observer);
+  const obs = rows.filter(p => p.is_observer);
+  const rankById = new Map();
+  main.forEach((p, i) => rankById.set(p.id, i + 1));
+  obs.forEach((p, i) => rankById.set(p.id, i + 1));
+  const N = main.length, T = Math.floor(N / 2);
+  const halfById = new Map();
+  main.forEach((p, i) => halfById.set(p.id, N >= 2 ? ((i + 1) <= T ? "top" : "bottom") : "neutral"));
+  return { rankById, halfById, main, obs };
+}
+
+// The "Desde [data]" highlight reel for the last completed game day — prioritised, capped at 5.
+function gameDayFacts(gd, bA, bB) {
+  const facts = [];
+  const nameOf = id => state.players.find(p => p.id === id)?.name || "?";
+  const main = bB.main; // non-observers, ranked as of B
+
+  // 1. Lead change
+  if (bA.main[0] && bB.main[0] && bA.main[0].id !== bB.main[0].id)
+    facts.push({ p: 1, emoji: "👑", text: `Novo líder: ${nameOf(bB.main[0].id)}` });
+
+  // 2. Biggest climber / faller (positive delta = climbed)
+  const deltas = main.filter(p => bA.rankById.get(p.id) != null)
+    .map(p => ({ id: p.id, d: bA.rankById.get(p.id) - bB.rankById.get(p.id) }));
+  const up = deltas.filter(x => x.d > 0).sort((a, b) => b.d - a.d)[0];
+  const down = deltas.filter(x => x.d < 0).sort((a, b) => a.d - b.d)[0];
+  if (up) facts.push({ p: 2, emoji: "🚀", text: `Maior subida: ${nameOf(up.id)} subiu ${up.d} lugar${up.d > 1 ? "es" : ""}` });
+  if (down) facts.push({ p: 2, emoji: "😬", text: `Maior queda: ${nameOf(down.id)} caiu ${-down.d}` });
+
+  // 3. Podium hits — teams newly out this game day that sit in someone's podium
+  const tsA = computeActualTournamentState(gd.A), tsB = computeActualTournamentState(gd.B);
+  [...tsB.eliminated].filter(t => !tsA.eliminated.has(t)).forEach(team => {
+    const hit = state.players.filter(p => !p.is_observer).filter(p => {
+      const pod = state.allPodiums[p.id];
+      return pod && [pod.first_place, pod.second_place, pod.third_place].includes(team);
+    }).map(p => p.name);
+    if (hit.length === 1) facts.push({ p: 3, emoji: "☠️", text: `O pódio de ${hit[0]} levou um golpe — ${team} eliminado (+20)` });
+    else if (hit.length > 1) facts.push({ p: 3, emoji: "☠️", text: `${team} eliminado — atinge o pódio de ${hit.length} jogadores (+20)` });
+  });
+
+  // 4. Overtakes — most significant
+  const overtakes = [];
+  main.forEach(x => main.forEach(y => {
+    if (x.id === y.id) return;
+    const xa = bA.rankById.get(x.id), ya = bA.rankById.get(y.id), xb = bB.rankById.get(x.id), yb = bB.rankById.get(y.id);
+    if (xa != null && ya != null && xa > ya && xb < yb) overtakes.push({ x: x.id, y: y.id, gain: xa - xb });
+  }));
+  overtakes.sort((a, b) => b.gain - a.gain).slice(0, 2).forEach(o =>
+    facts.push({ p: 4, emoji: "🔁", text: `${nameOf(o.x)} ultrapassou ${nameOf(o.y)}` }));
+
+  // 5. Exact results during the window
+  const windowExacts = [];
+  state.matches.filter(m => isFinal(m) && koMs(m) >= gd.A && koMs(m) < gd.B).forEach(m => {
+    state.players.filter(p => !p.is_observer).forEach(p => {
+      if (isExact(state.allPreds[p.id]?.[m.id], m))
+        windowExacts.push(`${p.name} acertou: ${m.team_a} ${m.score_a}-${m.score_b} ${m.team_b}`);
+    });
+  });
+  windowExacts.slice(0, 2).forEach(t => facts.push({ p: 5, emoji: "🎯", text: t }));
+
+  // 6. Dinner-zone crossings
+  main.forEach(p => {
+    const ha = bA.halfById.get(p.id), hb = bB.halfById.get(p.id);
+    if ((ha === "top" || ha === "bottom") && (hb === "top" || hb === "bottom") && ha !== hb)
+      facts.push({ p: 6, emoji: "🍽️", text: hb === "bottom" ? `${nameOf(p.id)} entrou na zona que paga o jantar` : `${nameOf(p.id)} saiu da zona que paga o jantar` });
+  });
+
+  return facts.sort((a, b) => a.p - b.p).slice(0, 5);
 }
 
 // ─── PREDICTED STANDINGS ─────────────────────────────────────────────
@@ -1448,6 +1571,20 @@ function renderLeaderboard() {
     });
   }
 
+  // Game-day position changes + fun facts (see leaderboard-position-changes-and-fun-facts.md).
+  // Frozen to the last completed game day (09:00 Lisbon rollover); shared across viewers.
+  const gd = lastCompletedGameDay(Date.now());
+  const deltaById = new Map();
+  let gameFacts = [];
+  if (gd) {
+    const bA = boardAsOf(gd.A), bB = boardAsOf(gd.B);
+    state.players.forEach(p => {
+      const ra = bA.rankById.get(p.id), rb = bB.rankById.get(p.id);
+      deltaById.set(p.id, (ra != null && rb != null) ? ra - rb : null);
+    });
+    gameFacts = gameDayFacts(gd, bA, bB);
+  }
+
   const medals = ["🥇","🥈","🥉"];
 
   const renderLbRow = (p, i, isObserver) => {
@@ -1455,6 +1592,11 @@ function renderLeaderboard() {
     const isExp = state.expanded[p.id];
     const exactMatches = isExp ? played.filter(m => isExact(state.allPreds[p.id]?.[m.id], m)) : [];
     const showMedal = !isObserver && medals[i];
+    const delta = deltaById.get(p.id);
+    const arrow = delta == null ? null
+      : delta > 0 ? { t: "▲" + delta, c: "#10b981" }
+      : delta < 0 ? { t: "▼" + (-delta), c: "#ef4444" }
+      : { t: "–", c: "rgba(255,255,255,0.3)" };
     const classifClass = isObserver ? "lb-row--observer"
       : p.locked === "green" ? "locked-green"
       : p.locked === "red" ? "locked-red"
@@ -1466,7 +1608,8 @@ function renderLeaderboard() {
       h("button", { className: `lb-row ${classifClass} ${isTop ? "top" : ""} ${isExp ? "expanded-top" : ""}`, onClick: () => { const e = { ...state.expanded }; e[p.id] = !e[p.id]; setState({ expanded: e }); } },
         h("div", { style: { width: "28px", textAlign: "center" } },
           h("div", { style: { fontSize: showMedal ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)" } }, showMedal ? medals[i] : String(i + 1)),
-          (!isObserver && p.locked) ? h("div", { style: { fontSize: "9px", marginTop: "1px", lineHeight: 1 } }, "🔒") : null
+          (!isObserver && p.locked) ? h("div", { style: { fontSize: "9px", marginTop: "1px", lineHeight: 1 } }, "🔒") : null,
+          arrow ? h("div", { style: { fontSize: "9px", fontWeight: 700, marginTop: "1px", lineHeight: 1, color: arrow.c } }, arrow.t) : null
         ),
         h("div", { style: { flex: 1 } },
           h("div", { style: { fontSize: "14px", fontWeight: 700, color: isTop ? "#fff" : "rgba(255,255,255,0.8)" } }, playerLabel(p)),
@@ -1534,6 +1677,14 @@ function renderLeaderboard() {
         : h("div", { style: { height: "200px", position: "relative" } },
             h("canvas", { id: "points-chart" })
           )
+    ) : null,
+    // Game-day highlights — "Desde [data]" (position changes + fun facts)
+    gd && gameFacts.length > 0 ? h("div", { style: { background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)", borderRadius: "14px", padding: "12px 14px", marginBottom: "20px", animation: "fadeIn 0.3s ease" } },
+      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" } }, `Desde ${fmtShort(new Date(gd.A).toISOString())}`),
+      ...gameFacts.map(f => h("div", { style: { display: "flex", gap: "8px", alignItems: "baseline", fontSize: "13px", color: "rgba(255,255,255,0.8)", padding: "3px 0" } },
+        h("span", null, f.emoji),
+        h("span", null, f.text)
+      ))
     ) : null,
     // Main rows (or empty state)
     mainLb.length === 0
