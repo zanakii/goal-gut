@@ -529,7 +529,7 @@ let state = {
   view: "matches", players: [], matches: [], allPreds: {}, allPodiums: {},
   currentPlayer: null, selectedMatch: null, groupFilter: "all", groupFilterTouched: false, statusFilter: "all",
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
-  expanded: {}, dropdownOpen: false, loading: true, error: null,
+  expanded: {}, resumoOpen: false, dropdownOpen: false, loading: true, error: null,
   lockDeadline: null, lockPassed: false, revealAt: null, revealPassed: false, actualPodium: null,
   showPinModal: false, pinValue: "", pinError: false, pinCallback: null, pinCancelCallback: null,
   bootPinPlayerName: null,
@@ -1785,6 +1785,26 @@ function renderLeaderboard() {
     h("div", { style: { height: "220px", position: "relative" } }, h("canvas", { id: "podium-bar-chart" }))
   ) : null;
 
+  // Resumo — collapsible "Desde [data]" highlights, collapsed by default so the
+  // leaderboard sits right at the top (users complained the open card pushed it down).
+  const resumoOpen = state.resumoOpen;
+  const resumoCard = (gd && gameFacts.length > 0) ? h("div", { style: { background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)", borderRadius: "14px", marginBottom: "16px", animation: "fadeIn 0.3s ease", overflow: "hidden" } },
+    h("button", { onClick: () => setState({ resumoOpen: !resumoOpen }), style: { width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "11px 14px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left" } },
+      h("span", { style: { fontSize: "13px" } }, "📊"),
+      h("span", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(255,255,255,0.7)", letterSpacing: "0.3px" } }, "Resumo"),
+      h("span", { style: { fontSize: "10px", fontWeight: 700, color: "#34d399", background: "rgba(52,211,153,0.12)", borderRadius: "999px", padding: "1px 7px" } }, `${gameFacts.length} novidade${gameFacts.length !== 1 ? "s" : ""}`),
+      h("span", { style: { flex: 1 } }),
+      h("span", { style: { fontSize: "11px", color: "rgba(255,255,255,0.3)" } }, resumoOpen ? "▴" : "▾")
+    ),
+    resumoOpen ? h("div", { style: { padding: "0 14px 12px" } },
+      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" } }, `Desde ${fmtShort(new Date(gd.A).toISOString())}`),
+      ...gameFacts.map(f => h("div", { style: { display: "flex", gap: "8px", alignItems: "baseline", fontSize: "13px", color: "rgba(255,255,255,0.8)", padding: "3px 0" } },
+        h("span", null, f.emoji),
+        h("span", null, f.text)
+      ))
+    ) : null
+  ) : null;
+
   return h("div", { className: "content" },
     h("div", { className: "progress-card" },
       h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "8px" } },
@@ -1797,16 +1817,8 @@ function renderLeaderboard() {
       h("h2", { style: { marginBottom: 0 } }, "Classificação"),
       state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
     ),
-    // Top chart: bar (grupos + pódio) leads post-group; line chart pre-group as before
-    tournamentState.groupStageComplete ? barChartWrap : lineChartWrap,
-    // Game-day highlights — "Desde [data]" (position changes + fun facts)
-    gd && gameFacts.length > 0 ? h("div", { style: { background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)", borderRadius: "14px", padding: "12px 14px", marginBottom: "20px", animation: "fadeIn 0.3s ease" } },
-      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.45)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" } }, `Desde ${fmtShort(new Date(gd.A).toISOString())}`),
-      ...gameFacts.map(f => h("div", { style: { display: "flex", gap: "8px", alignItems: "baseline", fontSize: "13px", color: "rgba(255,255,255,0.8)", padding: "3px 0" } },
-        h("span", null, f.emoji),
-        h("span", null, f.text)
-      ))
-    ) : null,
+    // Collapsed-by-default Resumo (game-day highlights) — keeps the leaderboard at the top
+    resumoCard,
     // Main rows (or empty state)
     mainLb.length === 0
       ? h("div", { style: { textAlign: "center", padding: "30px 20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "Sem classificação — só observadores.")
@@ -1820,7 +1832,9 @@ function renderLeaderboard() {
         ? h("div", { style: { textAlign: "center", padding: "20px", color: "rgba(255,255,255,0.3)", fontSize: "13px" } }, "A classificação será atualizada assim que os jogos comecem.")
         : h("div", null, ...obsLb.map((p, i) => renderLbRow(p, i, true)))
     ) : null,
-    // Group-stage line chart, relocated to the bottom once the bar chart leads
+    // Charts moved below the leaderboard — bar (grupos + pódio) leads post-group, line chart
+    // pre-group; post-group keeps both (bar then the frozen group-stage line chart).
+    tournamentState.groupStageComplete ? barChartWrap : lineChartWrap,
     tournamentState.groupStageComplete ? lineChartWrap : null
   );
 }
