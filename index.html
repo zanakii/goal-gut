@@ -683,7 +683,10 @@ async function loadData(silent = false) {
     // Pre-reveal: currentPlayer is always the PIN-verified viewer.
     // Post-reveal: default to the remembered player (their pre-reveal identity, or the
     // last one they manually selected) so everyone but GON isn't forced to re-pick on every visit.
-    const storedViewId = parseInt(localStorage.getItem('goalgut_player_id') || '', 10);
+    // player.id is a UUID string — never parseInt it (a stale integer-era parse here silently
+    // mangled every stored id to NaN, so the find below always missed and fell through to
+    // players[0] = Gonçalo, resetting everyone's viewed player on each reload).
+    const storedViewId = localStorage.getItem('goalgut_player_id') || null;
     const cp = (!revealPassed && state.viewerPlayerId)
       ? (players.find(p => p.id === state.viewerPlayerId) || players[0] || null)
       : (state.currentPlayer
@@ -745,7 +748,7 @@ function switchPlayer(p) {
 function initiateIdentityFlow() {
   const storedId = localStorage.getItem('goalgut_player_id');
   if (storedId) {
-    const player = state.players.find(p => p.id === parseInt(storedId));
+    const player = state.players.find(p => p.id === storedId); // UUID string — no parseInt
     if (player) { requestBootPin(player); return; }
     localStorage.removeItem('goalgut_player_id');
   }
