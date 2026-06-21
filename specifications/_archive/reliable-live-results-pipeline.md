@@ -138,3 +138,23 @@ Per project working defaults, run `get_advisors` (security + performance) after 
 
 - **Edge Function auth.** Settle the `poll-results` auth: deploy with `--no-verify-jwt` and check the `X-Cron-Key` shared secret (set as a function secret and as the Postgres `app.cron_key` GUC), vs. passing the service-role JWT from `pg_cron`. The shared-key route keeps the cron call simple and the function un-invokable by anon; lean that way unless it complicates secret management.
 - **Seed disambiguation for simultaneous kickoffs.** Confirm the final-round group games (two per group at the same UTC time) resolve cleanly on kickoff + one-name, or need the `(stage, group, matchday)` fallback. Verified at seed time by the human-eyeball step, so low risk.
+
+---
+
+## Addendum — 2026-06-21: post-full-time score corrections (re-poll window)
+
+**Third incident, new root cause.** Espanha 5-0 Arábia Saudita (id 45) showed as **finished 5-0**; the real result was **4-0** (Yamal 10', Oyarzabal 21' & 24', Altambakti OG 49' — four goals, confirmed on FIFA's match centre). football-data.org had reported a phantom 5th goal at full time, which we wrote and flipped to `finished` at ~18:08 UTC, then **amended to 4-0** in their feed afterwards (their record's `lastUpdated` read 20:36 UTC; the score edit itself likely landed sooner — `lastUpdated` only bounds it).
+
+This is **not** a pairing or triggering failure — both worked. It's a *digestion* gap: the poller's candidate query was `status in (scheduled, live)`, so the instant a match went `finished` it left the window **permanently**. Any upstream correction after the `→ finished` write was structurally unreachable. The poller faithfully copied a number that was right at 18:08 and wrong by 20:36, and could never look again.
+
+Diagnosis was confirmed live via a throwaway `debug-fd-score` Edge Function (the `/v4/matches/{id}` single-fixture endpoint is 403 on the free tier; only the competition endpoint is allowed), which showed the feed now returns `FINISHED 4-0`. Verified all timestamps are UTC (`matches.kickoff`/`updated_at` are `timestamp without time zone` stored UTC; DB `TimeZone=UTC`) — no zone confusion inflating the gap.
+
+**Fix (in `poll-results`, no schema change, no spec):**
+
+- **Re-poll terminal matches** (`finished` / `pen-home` / `pen-away`) for `REPOLL_WINDOW_MS = 6 h` after kickoff. 6 h comfortably covers the ~2.5 h observed correction lag.
+- **Score-only correction; never un-finish.** A terminal DB row is never reverted to `live` — a transient upstream `IN_PLAY` blip can't drag it back. It stops showing Live the moment the API says FINISHED and stays terminal; only the *score* (and pen winner) can still change. Corrections log as `[CORRECTION]` and count in a new `corrected` summary field.
+- **API-budget guard.** The competition request is one call for the whole day, so re-polling terminal matches is free whenever a live/scheduled match is already forcing a poll. When the window holds *only* terminal matches (the late-night tail), the call is throttled to a `RECHECK_EVERY_MIN = 5` minute bucket (`getUTCMinutes() % 5 === 0`), so the 6 h tail costs ~12 calls/h instead of 60 — stateless, no extra columns, no `updated_at` churn.
+
+**Manual correction applied:** id 45 set to 4-0 by hand at the time of diagnosis (its `updated_at` was bumped to ~20:57 UTC as a side effect, overwriting the original 18:08 write timestamp). With the re-poll window live, a future correction of this kind self-heals within ≤5 min (or ≤1 min while anything is live).
+
+**Still v0-only** — do not port forward; the public edition rebuilds ingest.
