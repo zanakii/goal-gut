@@ -4,13 +4,34 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Prognósticos WC 2026</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
+  /* ─── DESIGN TOKENS (single source of truth — see brand refresh) ───
+     Onyx & Gold: darkest base, emerald stays the primary identity, gold is the
+     premium secondary (labels, medals, rules). Body Manrope, headings Space Grotesk. */
+  :root {
+    --font-body: 'Manrope', -apple-system, sans-serif;
+    --font-head: 'Space Grotesk', 'Manrope', sans-serif;
+    --bg: #0a0b10;            /* was #0f172a — read a touch too "gamey" */
+    --bg-elev: #13151c;       /* modals / dropdowns — was #1e293b */
+    --accent: #34d399;        /* emerald — primary, unchanged */
+    --accent-2: #06b6d4;
+    --accent-ink: #07140f;    /* text sitting on the green accent */
+    --accent-grad: linear-gradient(135deg, #34d399, #06b6d4);
+    --gold: #e9b949;          /* premium secondary accent */
+    --header-bg: linear-gradient(135deg, #11130c 0%, #0a0b10 72%);
+    --logo-bg: linear-gradient(135deg, #1d1809 0%, #0b0c12 80%); /* dark premium, like the header */
+    --header-border: rgba(233,185,73,0.2);
+    --nav-bg: rgba(10,11,16,0.97);
+    --wc-rule: linear-gradient(90deg, #34d399, #e9b949, #e5484d); /* WC26 tricolour hairline */
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f172a; color: #fff; font-family: 'DM Sans', -apple-system, sans-serif; max-width: 480px; margin: 0 auto; min-height: 100vh; padding-bottom: 80px; }
+  body { background: var(--bg); color: #fff; font-family: var(--font-body); max-width: 480px; margin: 0 auto; min-height: 100vh; padding-bottom: 80px; overflow-x: hidden; }
   input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   input[type=number] { -moz-appearance: textfield; }
   ::-webkit-scrollbar { width: 0; }
@@ -18,18 +39,21 @@
   @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 
   /* Nav */
-  .nav { position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; background: rgba(15,23,42,0.95); backdrop-filter: blur(20px); border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-around; padding: 6px 0 env(safe-area-inset-bottom, 8px); }
+  .nav { position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; background: var(--nav-bg); backdrop-filter: blur(20px); border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-around; padding: 6px 0 env(safe-area-inset-bottom, 8px); }
   .nav button { background: none; border: none; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; color: rgba(255,255,255,0.4); font-size: 10px; font-weight: 600; padding: 4px 16px; transition: color 0.2s; font-family: inherit; }
-  .nav button.active { color: #34d399; }
+  .nav button.active { color: var(--gold); }
 
   /* Header */
-  .header { background: linear-gradient(135deg, #064e3b 0%, #0f172a 100%); padding: 16px 20px 14px; position: sticky; top: 0; z-index: 90; border-bottom: 1px solid rgba(52,211,153,0.15); display: flex; align-items: center; justify-content: space-between; }
+  /* Header band is full-bleed (spans the viewport) while content stays in the 480px column. */
+  .header { position: sticky; top: 0; z-index: 90; padding: 16px 20px 14px; display: flex; align-items: center; justify-content: space-between; }
+  .header::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); width: 100vw; background: var(--header-bg); border-bottom: 1px solid var(--header-border); box-shadow: 0 1px 0 rgba(233,185,73,0.18); z-index: -1; }
+  .header::after { content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 100vw; height: 3px; background: var(--wc-rule); z-index: -1; }
   .logo { display: flex; align-items: center; gap: 10px; }
-  .logo-circle { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #34d399, #06b6d4); display: flex; align-items: center; justify-content: center; }
-  .player-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 6px 14px; color: #34d399; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; position: relative; }
-  .player-dropdown { position: absolute; right: 0; top: 110%; background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); overflow: hidden; min-width: 180px; z-index: 999; animation: fadeIn 0.15s ease; }
+  .logo-circle { width: 36px; height: 36px; border-radius: 50%; background: var(--logo-bg); box-shadow: 0 0 0 1.5px rgba(233,185,73,0.5); display: flex; align-items: center; justify-content: center; }
+  .player-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(233,185,73,0.22); border-radius: 20px; padding: 6px 14px; color: var(--gold); font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; position: relative; }
+  .player-dropdown { position: absolute; right: 0; top: 110%; background: var(--bg-elev); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); overflow: hidden; min-width: 180px; z-index: 999; animation: fadeIn 0.15s ease; }
   .player-dropdown button { display: block; width: 100%; padding: 10px 16px; border: none; background: transparent; color: #94a3b8; font-size: 13px; font-weight: 500; cursor: pointer; text-align: left; font-family: inherit; border-bottom: 1px solid rgba(255,255,255,0.05); }
-  .player-dropdown button.sel { background: rgba(52,211,153,0.15); color: #34d399; }
+  .player-dropdown button.sel { background: rgba(233,185,73,0.14); color: var(--gold); }
 
   /* Badge */
   .badge { font-weight: 700; font-variant-numeric: tabular-nums; display: inline-block; min-width: 24px; text-align: center; color: #fff; }
@@ -38,8 +62,8 @@
 
   /* Content */
   .content { padding: 16px; }
-  h2 { font-size: 18px; font-weight: 800; margin-bottom: 14px; }
-  .group-label { font-size: 12px; font-weight: 700; color: #34d399; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; padding: 0 4px; }
+  h2 { font-family: var(--font-head); font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 14px; }
+  .group-label { font-family: var(--font-head); font-size: 12px; font-weight: 700; color: var(--gold); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; padding: 0 4px; }
 
   /* Match card */
   .match-card { display: flex; align-items: center; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); font-family: inherit; width: 100%; text-align: left; cursor: pointer; margin-bottom: 4px; }
@@ -49,10 +73,11 @@
   /* Filter buttons */
   .filters { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .filter-btn { padding: 6px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); background: transparent; color: rgba(255,255,255,0.5); font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
-  .filter-btn.active { border-color: #34d399; background: rgba(52,211,153,0.15); color: #34d399; }
+  /* Matches status filter: gold outline + text, no fill — distinct from the gold-filled group filter below. */
+  .filter-btn.active { border-color: var(--gold); background: transparent; color: var(--gold); }
   .group-filters { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
   .group-btn { padding: 4px 10px; border-radius: 8px; border: none; background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.4); font-size: 11px; font-weight: 700; cursor: pointer; font-family: inherit; }
-  .group-btn.active { background: #34d399; color: #0f172a; }
+  .group-btn.active { background: var(--gold); color: #1a1407; }
 
   /* Score display */
   .score-box { font-size: 14px; font-weight: 900; color: #fff; background: rgba(52,211,153,0.12); padding: 2px 8px; border-radius: 6px; font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
@@ -65,17 +90,17 @@
   .pred-input:disabled { background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.35); border-color: rgba(255,255,255,0.06); cursor: not-allowed; }
 
   /* Submit button */
-  .submit-btn { width: 100%; padding: 14px; border-radius: 12px; border: none; background: linear-gradient(135deg, #34d399, #06b6d4); color: #0f172a; font-size: 14px; font-weight: 800; cursor: pointer; font-family: inherit; box-shadow: 0 8px 24px rgba(52,211,153,0.3); }
+  .submit-btn { width: 100%; padding: 14px; border-radius: 12px; border: none; background: var(--accent-grad); color: var(--accent-ink); font-size: 14px; font-weight: 800; cursor: pointer; font-family: inherit; box-shadow: 0 8px 24px rgba(52,211,153,0.3); }
 
   /* Podium */
-  .podium-bar { position: sticky; top: 68px; z-index: 50; background: linear-gradient(180deg, #0f172a 0%, #0f172a 92%, transparent 100%); padding-bottom: 12px; margin-bottom: 4px; }
-  .podium-card { background: linear-gradient(135deg, rgba(251,191,36,0.06), rgba(180,83,9,0.04)); border: 1px solid rgba(251,191,36,0.12); border-radius: 14px; padding: 14px; }
+  .podium-bar { position: sticky; top: 68px; z-index: 50; background: linear-gradient(180deg, var(--bg) 0%, var(--bg) 92%, transparent 100%); padding-bottom: 12px; margin-bottom: 4px; }
+  .podium-card { background: linear-gradient(135deg, rgba(233,185,73,0.06), rgba(180,83,9,0.04)); border: 1px solid rgba(233,185,73,0.12); border-radius: 14px; padding: 14px; }
   .podium-select { width: 100%; padding: 7px 4px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 11px; font-weight: 600; font-family: inherit; outline: none; appearance: none; text-align: center; cursor: pointer; }
 
   /* Progress bar */
-  .progress-card { background: linear-gradient(135deg, rgba(52,211,153,0.1), rgba(6,182,212,0.05)); border: 1px solid rgba(52,211,153,0.15); border-radius: 16px; padding: 16px; margin-bottom: 20px; }
+  .progress-card { background: linear-gradient(135deg, rgba(233,185,73,0.08), rgba(233,185,73,0.03)); border: 1px solid rgba(233,185,73,0.16); border-radius: 16px; padding: 16px; margin-bottom: 20px; }
   .progress-track { height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; }
-  .progress-fill { height: 100%; background: linear-gradient(90deg, #34d399, #06b6d4); border-radius: 3px; transition: width 0.5s ease; }
+  .progress-fill { height: 100%; background: var(--wc-rule); border-radius: 3px; transition: width 0.5s ease; }
 
   /* Leaderboard row */
   .lb-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); cursor: pointer; font-family: inherit; text-align: left; background: rgba(255,255,255,0.02); margin-bottom: 6px; }
@@ -93,11 +118,11 @@
 
   /* PIN modal */
   .pin-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
-  .pin-modal { background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 28px 24px; width: 300px; text-align: center; animation: fadeIn 0.2s ease; }
+  .pin-modal { background: var(--bg-elev); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 28px 24px; width: 300px; text-align: center; animation: fadeIn 0.2s ease; }
   .pin-input { width: 140px; height: 48px; text-align: center; font-size: 24px; font-weight: 800; letter-spacing: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 2px solid rgba(52,211,153,0.3); border-radius: 12px; font-family: inherit; outline: none; margin: 16px 0; }
-  .pin-input:focus { border-color: #34d399; }
+  .pin-input:focus { border-color: var(--accent); }
   .pin-input.error { border-color: #ef4444; animation: shake 0.3s ease; }
-  .pin-btn { padding: 10px 24px; border-radius: 10px; border: none; background: #34d399; color: #0f172a; font-weight: 700; font-size: 14px; cursor: pointer; font-family: inherit; width: 100%; }
+  .pin-btn { padding: 10px 24px; border-radius: 10px; border: none; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 14px; cursor: pointer; font-family: inherit; width: 100%; }
   .pin-cancel { padding: 8px 24px; border-radius: 10px; border: none; background: transparent; color: rgba(255,255,255,0.4); font-weight: 600; font-size: 13px; cursor: pointer; font-family: inherit; margin-top: 8px; }
   @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
 
@@ -113,7 +138,7 @@
   .bracket-select { flex: 1; padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,0.06); color: #fff; border: 1px solid rgba(255,255,255,0.1); font-size: 12px; font-weight: 600; font-family: inherit; outline: none; cursor: pointer; }
   .bracket-select:disabled { opacity: 0.4; cursor: not-allowed; }
   .bracket-pill { flex: 1; padding: 8px 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: #fff; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit; text-align: center; transition: background 0.15s, color 0.15s; }
-  .bracket-pill--picked { background: #34d399; color: #0f172a; border-color: #34d399; }
+  .bracket-pill--picked { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .bracket-pill:not(.bracket-pill--picked):hover { background: rgba(255,255,255,0.1); }
 
   /* Predictions — group sections */
@@ -124,10 +149,10 @@
   }
 
   /* Standings modal */
-  .standings-modal { background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 20px; width: calc(100% - 32px); max-width: 440px; max-height: 82vh; overflow-y: auto; animation: fadeIn 0.2s ease; }
+  .standings-modal { background: var(--bg-elev); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 20px; width: calc(100% - 32px); max-width: 440px; max-height: 82vh; overflow-y: auto; animation: fadeIn 0.2s ease; }
 
   /* Loading */
-  .spinner { width: 40px; height: 40px; border: 3px solid rgba(52,211,153,0.2); border-top-color: #34d399; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  .spinner { width: 40px; height: 40px; border: 3px solid rgba(52,211,153,0.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 </style>
 </head>
 <body>
@@ -196,7 +221,7 @@ function isExact(pred, m) {
 function badgeColor(pts) {
   if (pts === 0) return "#3b82f6";
   if (pts <= 3) return "#34d399";
-  if (pts <= 6) return "#fbbf24";
+  if (pts <= 6) return "#e9b949";
   if (pts <= 9) return "#fb923c";
   return "#ef4444";
 }
@@ -374,8 +399,8 @@ function renderLockBanner() {
     );
   }
   return state.lockDeadline
-    ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
-        h("div", { style: { fontSize: "12px", color: "rgba(251,191,36,0.8)" } }, "⏰ Prazo: " + fmtDate(state.lockDeadline.toISOString())))
+    ? h("div", { style: { background: "rgba(233,185,73,0.08)", border: "1px solid rgba(233,185,73,0.15)", borderRadius: "12px", padding: "10px 16px", marginBottom: "16px", textAlign: "center" } },
+        h("div", { style: { fontSize: "12px", color: "rgba(233,185,73,0.8)" } }, "⏰ Prazo: " + fmtDate(state.lockDeadline.toISOString())))
     : null;
 }
 
@@ -454,7 +479,7 @@ function buildChart(canvasId, players, instanceKey) {
       maintainAspectRatio: false,
       plugins: {
         legend: {
-          labels: { color: "rgba(255,255,255,0.6)", font: { size: 11, family: "'DM Sans', sans-serif" }, boxWidth: 12, padding: 10, filter: item => item.text !== "__cutoff__" }
+          labels: { color: "rgba(255,255,255,0.6)", font: { size: 11, family: "'Manrope', sans-serif" }, boxWidth: 12, padding: 10, filter: item => item.text !== "__cutoff__" }
         },
         tooltip: { mode: "index", intersect: false }
       },
@@ -493,7 +518,7 @@ function buildPodiumBarChart(canvasId, instanceKey) {
     backgroundColor: players.map(p => {
       const v = calcPodiumSlotPts(mi, p.podiumArr[mi], ts);
       const a = p.is_observer ? 0.28 : 0.6;
-      return v === 20 ? `rgba(239,68,68,${a})` : v === 10 ? `rgba(251,191,36,${a})` : "transparent";
+      return v === 20 ? `rgba(239,68,68,${a})` : v === 10 ? `rgba(233,185,73,${a})` : "transparent";
     }),
     datalabels: {
       display: ctx => ctx.dataset.data[ctx.dataIndex] >= 10,   // only 10/20 segments are tall enough
@@ -1316,8 +1341,8 @@ function renderBracket() {
     ),
 
     // Tie-break resolution section
-    pendingTies.length > 0 ? h("div", { style: { background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: "12px", padding: "12px 14px", marginBottom: "16px" } },
-      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(251,191,36,0.9)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" } }, "⚠️ Empates a resolver"),
+    pendingTies.length > 0 ? h("div", { style: { background: "rgba(233,185,73,0.08)", border: "1px solid rgba(233,185,73,0.2)", borderRadius: "12px", padding: "12px 14px", marginBottom: "16px" } },
+      h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(233,185,73,0.9)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "10px" } }, "⚠️ Empates a resolver"),
       ...pendingTies.map(tie => {
         const posLabel = ["1º","2º","3º"][tie.pos - 1] || `${tie.pos}º`;
         return h("div", { style: { marginBottom: "10px" } },
@@ -1332,8 +1357,8 @@ function renderBracket() {
             ...tie.teams.map(team => h("button", {
               style: {
                 flex: 1, padding: "7px 10px", borderRadius: "8px",
-                border: "1px solid rgba(251,191,36,0.3)", background: "rgba(251,191,36,0.1)",
-                color: "rgba(251,191,36,0.9)", fontSize: "12px", fontWeight: 600,
+                border: "1px solid rgba(233,185,73,0.3)", background: "rgba(233,185,73,0.1)",
+                color: "rgba(233,185,73,0.9)", fontSize: "12px", fontWeight: 600,
                 cursor: "pointer", fontFamily: "inherit"
               },
               onClick: () => setState({ tiebreaks: { ...state.tiebreaks, [tie.key]: team } })
@@ -1391,9 +1416,9 @@ function renderBracket() {
           const sel = document.createElement("select");
           sel.className = "bracket-select";
           sel.disabled = true;
-          const def = document.createElement("option"); def.value = ""; def.textContent = "— Vencedor —"; def.style.background = "#1e293b";
+          const def = document.createElement("option"); def.value = ""; def.textContent = "— Vencedor —"; def.style.background = "#13151c";
           sel.appendChild(def);
-          (bothKnown ? [teamA, teamB] : allTeams).forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = teamWithFlag(t); o.style.background = "#1e293b"; sel.appendChild(o); });
+          (bothKnown ? [teamA, teamB] : allTeams).forEach(t => { const o = document.createElement("option"); o.value = t; o.textContent = teamWithFlag(t); o.style.background = "#13151c"; sel.appendChild(o); });
           sel.value = picked;
 
           return h("div", { className: `bracket-match${picked ? " bracket-match--picked" : ""}` },
@@ -1468,11 +1493,14 @@ function badge(pts, sm) {
   return h("span", { className: `badge ${sm ? "badge-sm" : "badge-md"}`, style: { background: badgeColor(pts) } }, String(pts));
 }
 
+// Gold World Cup trophy, inlined as an SVG data URI (sharp at any size, no network dependency).
+const TROPHY_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJ0IiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjZjZkYzhmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjYzk5YTJjIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHBhdGggZmlsbD0idXJsKCN0KSIgZD0iTTE4IDJINnYySDJ2M2E0IDQgMCAwIDAgNCA0aC4zQTYgNiAwIDAgMCAxMSAxNC45VjE4SDhhMSAxIDAgMCAwLTEgMXYxSDZhMSAxIDAgMCAwIDAgMmgxMmExIDEgMCAwIDAgMC0yaC0xdi0xYTEgMSAwIDAgMC0xLTFoLTN2LTMuMUE2IDYgMCAwIDAgMTcuNyAxMUgxOGE0IDQgMCAwIDAgNC00VjRoLTRWMnpNNiA5YTIgMiAwIDAgMS0yLTJWNmgydjN6bTE0LTJhMiAyIDAgMCAxLTIgMlY2aDJ2MXoiLz48L3N2Zz4=";
+
 function renderHeader() {
   const cp = state.currentPlayer;
   return h("div", { className: "header" },
     h("div", { className: "logo" },
-      h("div", { className: "logo-circle" }, h("span", { style: { fontSize: "16px" } }, "🏆")),
+      h("div", { className: "logo-circle" }, h("img", { src: TROPHY_ICON, width: 20, height: 20, alt: "Troféu", style: { display: "block" } })),
       h("div", null,
         h("div", { style: { fontSize: "15px", fontWeight: 800, color: "#fff" } }, "Prognósticos"),
         h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.5)" } }, "FIFA World Cup 2026™")
@@ -1647,7 +1675,7 @@ function renderMatches() {
   return h("div", { className: "content" },
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
       h("h2", { style: { marginBottom: 0 } }, "Jogos"),
-      state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
+      state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(233,185,73,0.25)", background: "rgba(233,185,73,0.08)", color: "var(--gold)", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
     ),
     h("div", { className: "filters" },
       ...["all","played","upcoming"].map(s => h("button", { className: `filter-btn ${state.statusFilter === s ? "active" : ""}`, onClick: () => setState({ statusFilter: s }) },
@@ -1834,14 +1862,14 @@ function renderLeaderboard() {
           ))
         ),
         p.podiumArr.some(t => t) ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.05)" } },
-          h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(251,191,36,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } },
+          h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(233,185,73,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } },
             p.podiumPts !== null ? `Pódio — ${p.podiumPts} pts` : "Pódio previsto"
           ),
           h("div", { style: { display: "flex", gap: "5px" } },
             ...["🥇","🥈","🥉"].map((medal, mi) => {
               const predicted = p.podiumArr[mi];
               const pPts = calcPodiumSlotPts(mi, predicted, tournamentState); // canonical 0 | 10 | 20 | null
-              const dotColor = pPts === 0 ? "#10b981" : pPts === 10 ? "#fbbf24" : pPts === 20 ? "#ef4444" : "rgba(255,255,255,0.2)";
+              const dotColor = pPts === 0 ? "#10b981" : pPts === 10 ? "#e9b949" : pPts === 20 ? "#ef4444" : "rgba(255,255,255,0.2)";
               return h("div", { style: { flex: 1, textAlign: "center", padding: "5px 4px", borderRadius: "7px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)" } },
                 h("div", { style: { fontSize: "11px", marginBottom: "3px" } }, medal),
                 h("div", { style: { fontSize: "18px", lineHeight: 1 } }, predicted ? (flagOf(predicted) || predicted) : "—"),
@@ -1879,11 +1907,11 @@ function renderLeaderboard() {
   // Resumo — collapsible "Desde [data]" highlights, collapsed by default so the
   // leaderboard sits right at the top (users complained the open card pushed it down).
   const resumoOpen = state.resumoOpen;
-  const resumoCard = (gd && gameFacts.length > 0) ? h("div", { style: { background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.15)", borderRadius: "14px", marginBottom: "16px", animation: "fadeIn 0.3s ease", overflow: "hidden" } },
+  const resumoCard = (gd && gameFacts.length > 0) ? h("div", { style: { background: "rgba(233,185,73,0.06)", border: "1px solid rgba(233,185,73,0.18)", borderRadius: "14px", marginBottom: "16px", animation: "fadeIn 0.3s ease", overflow: "hidden" } },
     h("button", { onClick: () => setState({ resumoOpen: !resumoOpen }), style: { width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "11px 14px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left" } },
       h("span", { style: { fontSize: "13px" } }, "📊"),
       h("span", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(255,255,255,0.7)", letterSpacing: "0.3px" } }, "Resumo"),
-      h("span", { style: { fontSize: "10px", fontWeight: 700, color: "#34d399", background: "rgba(52,211,153,0.12)", borderRadius: "999px", padding: "1px 7px" } }, `${gameFacts.length} novidade${gameFacts.length !== 1 ? "s" : ""}`),
+      h("span", { style: { fontSize: "10px", fontWeight: 700, color: "var(--gold)", background: "rgba(233,185,73,0.14)", borderRadius: "999px", padding: "1px 7px" } }, `${gameFacts.length} novidade${gameFacts.length !== 1 ? "s" : ""}`),
       h("span", { style: { flex: 1 } }),
       h("span", { style: { fontSize: "11px", color: "rgba(255,255,255,0.3)" } }, resumoOpen ? "▴" : "▾")
     ),
@@ -1900,13 +1928,13 @@ function renderLeaderboard() {
     h("div", { className: "progress-card" },
       h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "8px" } },
         h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.5)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" } }, "Progresso do Torneio"),
-        h("span", { style: { fontSize: "13px", color: "#34d399", fontWeight: 700 } }, `${played.length}/${state.matches.length} jogos`)
+        h("span", { style: { fontSize: "13px", color: "var(--gold)", fontWeight: 700 } }, `${played.length}/${state.matches.length} jogos`)
       ),
       h("div", { className: "progress-track" }, h("div", { className: "progress-fill", style: { width: progress + "%" } }))
     ),
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
       h("h2", { style: { marginBottom: 0 } }, "Classificação"),
-      state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
+      state.lockPassed ? h("button", { onClick: generateAudit, style: { padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(233,185,73,0.25)", background: "rgba(233,185,73,0.08)", color: "var(--gold)", fontSize: "11px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Auditoria") : null
     ),
     // Collapsed-by-default Resumo (game-day highlights) — keeps the leaderboard at the top
     resumoCard,
@@ -2093,9 +2121,9 @@ function renderPredictions() {
     ),
     // Excel import/export
     h("div", { style: { display: "flex", gap: "8px", marginBottom: state.importMsg ? "8px" : "16px" } },
-      h("button", { onClick: generateTemplate, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Template Excel"),
-      state.submitted ? h("button", { onClick: generateReceipt, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(52,211,153,0.2)", background: "rgba(52,211,153,0.06)", color: "#34d399", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Recibo") : null,
-      h("label", { style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "center", display: "block" } },
+      h("button", { onClick: generateTemplate, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(233,185,73,0.25)", background: "rgba(233,185,73,0.08)", color: "var(--gold)", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Template Excel"),
+      state.submitted ? h("button", { onClick: generateReceipt, style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(233,185,73,0.25)", background: "rgba(233,185,73,0.08)", color: "var(--gold)", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit" } }, "⬇ Recibo") : null,
+      h("label", { style: { flex: 1, padding: "9px", borderRadius: "10px", border: "1px solid rgba(233,185,73,0.25)", background: "rgba(233,185,73,0.08)", color: "var(--gold)", fontSize: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textAlign: "center", display: "block" } },
         "⬆ Importar Excel",
         h("input", { type: "file", accept: ".xlsx", style: { display: "none" }, onChange: (e) => { if (e.target.files[0]) { importExcel(e.target.files[0]); e.target.value = ""; } } })
       )
@@ -2105,9 +2133,9 @@ function renderPredictions() {
     h("div", { className: "podium-bar" },
       h("div", { className: "podium-card" },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
-          h("div", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(251,191,36,0.8)", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Pódio Final"),
+          h("div", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(233,185,73,0.8)", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Pódio Final"),
           state.submitted
-            ? h("button", { onClick: () => setState({ view: "bracket", viewTouched: true }), style: { background: "none", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "8px", color: "rgba(251,191,36,0.7)", fontSize: "11px", fontWeight: 600, padding: "3px 10px", cursor: "pointer", fontFamily: "inherit" } }, state.hasBracket ? "Editar →" : "Criar →")
+            ? h("button", { onClick: () => setState({ view: "bracket", viewTouched: true }), style: { background: "none", border: "1px solid rgba(233,185,73,0.25)", borderRadius: "8px", color: "rgba(233,185,73,0.7)", fontSize: "11px", fontWeight: 600, padding: "3px 10px", cursor: "pointer", fontFamily: "inherit" } }, state.hasBracket ? "Editar →" : "Criar →")
             : null
         ),
         !state.submitted
