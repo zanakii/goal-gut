@@ -156,6 +156,10 @@ async function sbPost(table, data) {
 
 // Fire-and-forget engagement logging. Never blocks UI; failures are silent.
 let __appOpenLogged = false;
+// Set when navigating *to* the Matches tab; consumed by one auto-scroll on the next render
+// (see specifications/matches-tab-chronological-and-live.md). Starts true so a fresh load that
+// opens on Matches scrolls to the live/next game once.
+let __matchesNeedScroll = true;
 function logEvent(event, metadata = null) {
   if (!state.viewerPlayerId) return;
   fetch(`${SUPABASE_URL}/rest/v1/app_events`, {
@@ -242,6 +246,34 @@ function calcPodiumPts(podiumArr, tournamentState) {
   return hasAnyScore ? pts : null;
 }
 
+// ─── STANDINGS ORDERING (single source of truth) ─────────────────────
+// Tie-break ladder (see specifications/leaderboard-tie-breaks.md), each consulted only when
+// everything above is equal:
+//   1. total (golf, lower wins)  2. exacts (more wins)
+//   3. group-stage game points (lower wins; frozen once the group stage ends)
+//   4. champion-pick outcome — the 1st-place podium slot, ordered 0 < null < 10 < 20
+//      (right champion → still in play → reached podium → eliminated).
+// Criteria 3–4 are dormant until the group stage ends / the knockouts begin; rows must carry
+// `gamePts` and `podiumArr` for them to bite (missing → inert). There is deliberately no
+// "fewer podium points" criterion: since total = gamePts + podiumPts, equal total + equal
+// gamePts already forces equal podiumPts, so it could never decide anything.
+function champKey(p, ts) {
+  const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | 10 | 20 | null
+  return slot === 0 ? 0 : slot === null ? 1 : slot === 10 ? 2 : 3;
+}
+function compareStandings(a, b, ts) {
+  return a.total - b.total
+      || b.exacts - a.exacts
+      || (a.gamePts ?? a.total) - (b.gamePts ?? b.total)
+      || champKey(a, ts) - champKey(b, ts);
+}
+// True tie = indistinguishable on every criterion → shared rank + shared medal.
+function sameRank(a, b, ts) {
+  return a.total === b.total && a.exacts === b.exacts
+      && (a.gamePts ?? a.total) === (b.gamePts ?? b.total)
+      && champKey(a, ts) === champKey(b, ts);
+}
+
 // ─── FLAGS ───────────────────────────────────────────────────────────
 const FLAGS = {
   'Brasil':'🇧🇷','Argentina':'🇦🇷','Colômbia':'🇨🇴','Uruguai':'🇺🇾','Equador':'🇪🇨',
@@ -310,6 +342,19 @@ function fmtDate(iso) {
     new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ, weekday: 'short' }).format(d)
   );
   return `${wd[dow]} ${fmtShort(iso)} ${fmtTime(iso)}`;
+}
+// Lisbon-local calendar-day key (YYYY-MM-DD) — groups matches by the date they *display* under,
+// not the raw UTC date (kickoffs are Americas evenings = small hours in Lisbon).
+function ptDateKey(iso) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: PT_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(parseAsUTC(iso));
+}
+// Weekday + short date, no time — the chronological-list day separator (e.g. "Qui 11/06").
+function fmtDayLabel(iso) {
+  const wd = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(
+    new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ, weekday: 'short' }).format(parseAsUTC(iso))
+  );
+  return `${wd[dow]} ${fmtShort(iso)}`;
 }
 
 // Lock/reveal banner shared by the Prognósticos and Fase Final tabs (see
@@ -527,7 +572,7 @@ function initCharts() {
 // ─── STATE ───────────────────────────────────────────────────────────
 let state = {
   view: "matches", players: [], matches: [], allPreds: {}, allPodiums: {},
-  currentPlayer: null, selectedMatch: null, groupFilter: "all", groupFilterTouched: false, statusFilter: "all",
+  currentPlayer: null, selectedMatch: null, groupFilter: "all", groupFilterTouched: false, statusFilter: "all", viewTouched: false,
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
   expanded: {}, resumoOpen: false, dropdownOpen: false, loading: true, error: null,
   lockDeadline: null, lockPassed: false, revealAt: null, revealPassed: false, actualPodium: null,
@@ -636,6 +681,11 @@ async function loadData(silent = false) {
       hasBracket: !!podMap[cp?.id], bracketStale: false, predictionsEdited: false,
       submittedAt: Object.keys(myPreds).length > 0 ? (state.submittedAt || new Date(0)) : null
     });
+
+    // Once the group stage is over, the story is the standings — open on the leaderboard instead
+    // of Matches, unless the user has already navigated this session (mirrors groupFilterTouched;
+    // see specifications/default-to-leaderboard-post-group-stage.md).
+    if (!state.viewTouched && computeActualTournamentState().groupStageComplete) setState({ view: "leaderboard" });
 
     // Show identity flow if pre-reveal and not yet authenticated (PIN gate persists through the lock→reveal window)
     if (!revealPassed && !state.viewerPlayerId) initiateIdentityFlow();
@@ -911,15 +961,17 @@ function standingsAsOf(cutoff) {
     });
     const pod = state.allPodiums[p.id];
     const podiumArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
+    const gamePts = total; // group-game points only, before podium (tie-break criterion 3)
     const podiumPts = calcPodiumPts(podiumArr, ts);
     if (podiumPts !== null) total += podiumPts;
-    return { id: p.id, name: p.name, is_observer: p.is_observer, total, exacts };
+    return { id: p.id, name: p.name, is_observer: p.is_observer, total, exacts, gamePts, podiumArr, podiumPts };
   });
 }
 
 // Ranks (per pool) and dinner-half (non-observers) as of a cutoff.
 function boardAsOf(cutoff) {
-  const rows = standingsAsOf(cutoff).sort((a, b) => a.total - b.total || b.exacts - a.exacts);
+  const ts = computeActualTournamentState(cutoff);
+  const rows = standingsAsOf(cutoff).sort((a, b) => compareStandings(a, b, ts));
   const main = rows.filter(p => !p.is_observer);
   const obs = rows.filter(p => p.is_observer);
   const rankById = new Map();
@@ -1388,7 +1440,8 @@ function navigateTo(newView) {
     setState({ identityModalOpen: true });
     return;
   }
-  setState({ view: newView });
+  if (newView === "matches") __matchesNeedScroll = true;
+  setState({ view: newView, viewTouched: true });
   logEvent('tab_view', { tab: newView });
 }
 
@@ -1493,41 +1546,63 @@ function renderMatches() {
   const koShown = state.statusFilter === "upcoming" ? [] : state.matches
     .filter(m => KO_STAGE_LABELS[m.group_letter] && (m.score_a !== null || isLive(m)));
 
+  // Shared group-stage match card, used by both the per-group letter views and the chronological
+  // "Todos" list. `domId` tags the auto-scroll anchor (chronological view only).
+  const groupCard = (m, domId) => {
+    const played = m.score_a !== null;
+    const pred = myPreds[m.id];
+    const pts = played && pred ? calcPts(pred, m) : null;
+    const ex = played && pred && isExact(pred, m);
+    const props = { className: `match-card ${!played ? "upcoming" : ""} ${ex ? "exact" : ""}`,
+      onClick: () => { if (played) setState({ selectedMatch: m.id, view: "matchDetail", viewTouched: true }); } };
+    if (domId) props.id = domId;
+    return h("div", props,
+      h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", width: "48px", lineHeight: "1.3" } },
+        h("div", null, fmtShort(m.kickoff)), h("div", null, fmtTime(m.kickoff))
+      ),
+      h("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: "2px" } },
+        h("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" } },
+          h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "right", flex: 1 } }, teamWithFlag(m.team_a)),
+          played ? h("span", { className: "score-box" }, `${m.score_a} - ${m.score_b}`) :
+            h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.2)", minWidth: "44px", textAlign: "center" } }, "vs"),
+          h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "left", flex: 1 } }, teamWithFlag(m.team_b))
+        ),
+        pred ? h("div", { style: { display: "flex", justifyContent: "center" } },
+          h("span", { style: { fontSize: "10px", fontWeight: 600, color: ex ? "#10b981" : "rgba(255,255,255,0.25)" } },
+            (ex ? "✓ " : "Eu: ") + pred.score_a + " - " + pred.score_b)
+        ) : null
+      ),
+      h("div", { style: { display: "flex", alignItems: "center", gap: "6px", minWidth: "46px", justifyContent: "flex-end" } },
+        isLive(m) ? h("span", { className: "live-pill" }, "AO VIVO") : null,
+        badge(pts, true),
+        played ? h("span", { style: { fontSize: "11px", color: "rgba(255,255,255,0.15)" } }, "›") : null
+      )
+    );
+  };
+
+  const emptyNode = h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", padding: "40px 0", fontSize: "13px" } }, "Nenhum jogo encontrado");
+
+  // Per-group letter view (A…L): matches under "Grupo X" headers.
   const groupNodes = [
     ...Object.entries(grouped).map(([grp, ms]) => h("div", { style: { marginBottom: "20px" } },
       h("div", { className: "group-label" }, "Grupo " + grp),
-      ...ms.map(m => {
-        const played = m.score_a !== null;
-        const pred = myPreds[m.id];
-        const pts = played && pred ? calcPts(pred, m) : null;
-        const ex = played && pred && isExact(pred, m);
-        return h("div", { className: `match-card ${!played ? "upcoming" : ""} ${ex ? "exact" : ""}`,
-          onClick: () => { if (played) setState({ selectedMatch: m.id, view: "matchDetail" }); } },
-          h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", width: "48px", lineHeight: "1.3" } },
-            h("div", null, fmtShort(m.kickoff)), h("div", null, fmtTime(m.kickoff))
-          ),
-          h("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: "2px" } },
-            h("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: "6px" } },
-              h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "right", flex: 1 } }, teamWithFlag(m.team_a)),
-              played ? h("span", { className: "score-box" }, `${m.score_a} - ${m.score_b}`) :
-                h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.2)", minWidth: "44px", textAlign: "center" } }, "vs"),
-              h("span", { style: { fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.75)", textAlign: "left", flex: 1 } }, teamWithFlag(m.team_b))
-            ),
-            pred ? h("div", { style: { display: "flex", justifyContent: "center" } },
-              h("span", { style: { fontSize: "10px", fontWeight: 600, color: ex ? "#10b981" : "rgba(255,255,255,0.25)" } },
-                (ex ? "✓ " : "Eu: ") + pred.score_a + " - " + pred.score_b)
-            ) : null
-          ),
-          h("div", { style: { display: "flex", alignItems: "center", gap: "6px", minWidth: "46px", justifyContent: "flex-end" } },
-            isLive(m) ? h("span", { className: "live-pill" }, "AO VIVO") : null,
-            badge(pts, true),
-            played ? h("span", { style: { fontSize: "11px", color: "rgba(255,255,255,0.15)" } }, "›") : null
-          )
-        );
-      })
+      ...ms.map(m => groupCard(m))
     )),
-    filtered.length === 0 ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", padding: "40px 0", fontSize: "13px" } }, "Nenhum jogo encontrado") : null
+    filtered.length === 0 ? emptyNode : null
   ];
+
+  // Chronological "Todos" view: one time-ordered list, day-separated (by Lisbon date), with the
+  // first live game (else the next upcoming) tagged as the auto-scroll anchor.
+  const chronoSorted = [...filtered].sort((a, b) => koMs(a) - koMs(b));
+  const anchorId = (chronoSorted.find(isLive) || chronoSorted.find(m => m.score_a === null))?.id;
+  const chronoNodes = [];
+  let lastDay = null;
+  chronoSorted.forEach(m => {
+    const day = ptDateKey(m.kickoff);
+    if (day !== lastDay) { lastDay = day; chronoNodes.push(h("div", { className: "group-label" }, fmtDayLabel(m.kickoff))); }
+    chronoNodes.push(groupCard(m, m.id === anchorId ? "match-anchor" : null));
+  });
+  if (chronoSorted.length === 0) chronoNodes.push(emptyNode);
 
   // Fase Final view — read-only KO results grouped by stage (cards non-clickable: no predictions).
   const koNodes = koShown.length === 0
@@ -1561,6 +1636,14 @@ function renderMatches() {
         );
       }).filter(Boolean);
 
+  // Auto-scroll to the live/next game once per tab entry (not on the per-minute poll re-render,
+  // which would yank the page mid-read). The anchor only exists in the chronological "Todos" view.
+  if (__matchesNeedScroll) {
+    __matchesNeedScroll = false;
+    requestAnimationFrame(() => document.getElementById('match-anchor')?.scrollIntoView({ block: 'center' }));
+  }
+
+  const body = showFinal ? koNodes : effectiveFilter === "all" ? chronoNodes : groupNodes;
   return h("div", { className: "content" },
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "14px" } },
       h("h2", { style: { marginBottom: 0 } }, "Jogos"),
@@ -1575,7 +1658,7 @@ function renderMatches() {
       ...groups.map(g => h("button", { className: `group-btn ${effectiveFilter === g ? "active" : ""}`, onClick: pickFilter(g) }, g)),
       groupStageComplete ? h("button", { className: `group-btn ${effectiveFilter === "FINAL" ? "active" : ""}`, onClick: pickFilter("FINAL") }, "Fase Final") : null
     ),
-    ...(showFinal ? koNodes : groupNodes)
+    ...body
   );
 }
 
@@ -1588,7 +1671,7 @@ function renderMatchDetail() {
   }).sort((a, b) => (a.pts ?? 999) - (b.pts ?? 999));
 
   return h("div", { className: "content" },
-    h("button", { onClick: () => setState({ view: "matches" }), style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Voltar aos jogos"),
+    h("button", { onClick: () => { __matchesNeedScroll = true; setState({ view: "matches", viewTouched: true }); }, style: { background: "none", border: "none", color: "#34d399", fontSize: "13px", fontWeight: 600, cursor: "pointer", marginBottom: "16px", padding: 0, fontFamily: "inherit" } }, "← Voltar aos jogos"),
     h("div", { style: { background: "linear-gradient(135deg, rgba(52,211,153,0.08), rgba(6,182,212,0.04))", border: "1px solid rgba(52,211,153,0.12)", borderRadius: "16px", padding: "20px", textAlign: "center", marginBottom: "20px" } },
       h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.4)", marginBottom: "4px" } }, `Grupo ${m.group_letter} · Jogo ${m.id}`),
       h("div", { style: { fontSize: "11px", color: "rgba(255,255,255,0.3)", marginBottom: "12px" } }, `${fmtDate(m.kickoff)} · ${m.venue}`),
@@ -1635,14 +1718,22 @@ function renderLeaderboard() {
     });
     const pod = state.allPodiums[p.id];
     const podiumArr = pod ? [pod.first_place, pod.second_place, pod.third_place] : ["", "", ""];
+    const gamePts = total; // group-game points only, before podium (tie-break criterion 3)
     const podiumPts = calcPodiumPts(podiumArr, tournamentState);
     if (podiumPts !== null) total += podiumPts;
-    return { ...p, total, scored, exacts, podiumArr, podiumPts };
-  }).sort((a, b) => a.total - b.total || b.exacts - a.exacts);
+    return { ...p, total, scored, exacts, gamePts, podiumArr, podiumPts };
+  }).sort((a, b) => compareStandings(a, b, tournamentState));
 
   // Partition by observer status — observers live in their own section (see observer-members.md)
   const mainLb = lb.filter(p => !p.is_observer);
   const obsLb = lb.filter(p => p.is_observer);
+  // Competition ranking: genuinely-tied players share a rank (and medal); the next rank skips
+  // (1, 1, 3). Drives the medal/position display below — see leaderboard-tie-breaks.md.
+  const assignRanks = list => list.forEach((p, i) => {
+    p.rank = (i > 0 && sameRank(list[i - 1], p, tournamentState)) ? list[i - 1].rank : i + 1;
+  });
+  assignRanks(mainLb);
+  assignRanks(obsLb);
 
   // Dinner-split classification applies only to mainLb (see leaderboard-v0-dinner-split.md)
   const N = mainLb.length;
@@ -1697,10 +1788,10 @@ function renderLeaderboard() {
   const medals = ["🥇","🥈","🥉"];
 
   const renderLbRow = (p, i, isObserver) => {
-    const isTop = !isObserver && i < 3;
+    const isTop = !isObserver && p.rank <= 3;
     const isExp = state.expanded[p.id];
     const exactMatches = isExp ? played.filter(m => isExact(state.allPreds[p.id]?.[m.id], m)) : [];
-    const showMedal = !isObserver && medals[i];
+    const showMedal = !isObserver && medals[p.rank - 1];
     const delta = deltaById.get(p.id);
     const arrow = delta == null ? null
       : delta > 0 ? { t: "▲" + delta, c: "#10b981" }
@@ -1716,7 +1807,7 @@ function renderLeaderboard() {
     return h("div", null,
       h("button", { className: `lb-row ${classifClass} ${isTop ? "top" : ""} ${isExp ? "expanded-top" : ""}`, onClick: () => { const e = { ...state.expanded }; e[p.id] = !e[p.id]; setState({ expanded: e }); } },
         h("div", { style: { width: "28px", textAlign: "center" } },
-          h("div", { style: { fontSize: showMedal ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)" } }, showMedal ? medals[i] : String(i + 1)),
+          h("div", { style: { fontSize: showMedal ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)" } }, showMedal ? medals[p.rank - 1] : String(p.rank)),
           (!isObserver && p.locked) ? h("div", { style: { fontSize: "9px", marginTop: "1px", lineHeight: 1 } }, "🔒") : null,
           arrow ? h("div", { style: { fontSize: "9px", fontWeight: 700, marginTop: "1px", lineHeight: 1, color: arrow.c } }, arrow.t) : null
         ),
@@ -2016,7 +2107,7 @@ function renderPredictions() {
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" } },
           h("div", { style: { fontSize: "12px", fontWeight: 700, color: "rgba(251,191,36,0.8)", textTransform: "uppercase", letterSpacing: "0.5px" } }, "Pódio Final"),
           state.submitted
-            ? h("button", { onClick: () => setState({ view: "bracket" }), style: { background: "none", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "8px", color: "rgba(251,191,36,0.7)", fontSize: "11px", fontWeight: 600, padding: "3px 10px", cursor: "pointer", fontFamily: "inherit" } }, state.hasBracket ? "Editar →" : "Criar →")
+            ? h("button", { onClick: () => setState({ view: "bracket", viewTouched: true }), style: { background: "none", border: "1px solid rgba(251,191,36,0.25)", borderRadius: "8px", color: "rgba(251,191,36,0.7)", fontSize: "11px", fontWeight: 600, padding: "3px 10px", cursor: "pointer", fontFamily: "inherit" } }, state.hasBracket ? "Editar →" : "Criar →")
             : null
         ),
         !state.submitted
