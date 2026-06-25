@@ -272,31 +272,45 @@ function calcPodiumPts(podiumArr, tournamentState) {
 }
 
 // ─── STANDINGS ORDERING (single source of truth) ─────────────────────
-// Tie-break ladder (see specifications/leaderboard-tie-breaks.md), each consulted only when
+// Tie-break ladder (see specifications/tie-break-ladder-reorder.md), each consulted only when
 // everything above is equal:
-//   1. total (golf, lower wins)  2. exacts (more wins)
-//   3. group-stage game points (lower wins; frozen once the group stage ends)
-//   4. champion-pick outcome — the 1st-place podium slot, ordered 0 < null < 10 < 20
+//   1. total (golf, lower wins)
+//   2. champion-pick outcome — the 1st-place podium slot, ordered 0 < null < 10 < 20
 //      (right champion → still in play → reached podium → eliminated).
-// Criteria 3–4 are dormant until the group stage ends / the knockouts begin; rows must carry
-// `gamePts` and `podiumArr` for them to bite (missing → inert). There is deliberately no
-// "fewer podium points" criterion: since total = gamePts + podiumPts, equal total + equal
-// gamePts already forces equal podiumPts, so it could never decide anything.
+//   3. group-stage game points (lower wins; frozen once the group stage ends)
+//   4. exacts (more wins)
+// Criteria 2–3 are dormant until the group stage ends / the knockouts begin; rows must carry
+// `podiumArr` and `gamePts` for them to bite (missing → inert). Champion needs no phase gate:
+// calcPodiumSlotPts(0, …) is null for everyone until the group stage completes, so criterion 2
+// is naturally inert during the group stage (ladder collapses to total → exacts) and starts
+// biting once knockouts cause eliminations. There is deliberately no "fewer podium points"
+// criterion: since total = gamePts + podiumPts, equal total + equal gamePts already forces equal
+// podiumPts, so it could never decide anything.
+//
+// `champKey` (graded, 0<null<10<20) drives DISPLAY order — a lost-the-final pick (10) is printed
+// above an out-in-the-R32 pick (20). `champBucket` (right/alive/wrong, collapsing 10 & 20 → wrong)
+// drives RANK EQUALITY — both-wrong picks share a rank+medal regardless of how the pick died.
+// The gap between them is the "visual-only sorting within a shared rank" behaviour.
 function champKey(p, ts) {
   const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | 10 | 20 | null
   return slot === 0 ? 0 : slot === null ? 1 : slot === 10 ? 2 : 3;
 }
+function champBucket(p, ts) {
+  const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | 10 | 20 | null
+  return slot === 0 ? "right" : slot === null ? "alive" : "wrong"; // 10 & 20 → "wrong"
+}
 function compareStandings(a, b, ts) {
   return a.total - b.total
-      || b.exacts - a.exacts
+      || champKey(a, ts) - champKey(b, ts)
       || (a.gamePts ?? a.total) - (b.gamePts ?? b.total)
-      || champKey(a, ts) - champKey(b, ts);
+      || b.exacts - a.exacts;
 }
 // True tie = indistinguishable on every criterion → shared rank + shared medal.
 function sameRank(a, b, ts) {
-  return a.total === b.total && a.exacts === b.exacts
+  return a.total === b.total
+      && champBucket(a, ts) === champBucket(b, ts)
       && (a.gamePts ?? a.total) === (b.gamePts ?? b.total)
-      && champKey(a, ts) === champKey(b, ts);
+      && a.exacts === b.exacts;
 }
 
 // ─── FLAGS ───────────────────────────────────────────────────────────
