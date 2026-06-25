@@ -33,3 +33,6 @@ pids/
 # Claude hook scratch files (DB snapshot diffs)
 .claude/.snapshot-*.txt
 .vercel
+
+# Ad-hoc analytics reports (game-analyst scoring analysis, etc.)
+scoring-analysis-report*.html
