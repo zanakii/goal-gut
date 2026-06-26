@@ -541,12 +541,28 @@ function buildPodiumBarChart(canvasId, instanceKey) {
     }
   });
 
+  // Pending structural-floor segment: bracket-guaranteed points not yet materialised, stacked on
+  // top in grey so it reads as provisional against the amber/red scored segments. Gives way to a
+  // solid scored segment once the collision plays out. See structural-podium-floor.md.
+  const floorDataset = {
+    label: "Garantido (pendente)",
+    stack: "s",
+    data: players.map(p => p.floorPending || 0),
+    backgroundColor: players.map(p => p.is_observer ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.45)"),
+    datalabels: {
+      display: ctx => ctx.dataset.data[ctx.dataIndex] >= 20,
+      formatter: (_v, ctx) => (players[ctx.dataIndex].floorDrivers || []).flat().map(t => flagOf(t) || "").join(""),
+      color: "rgba(255,255,255,0.9)", font: { size: 10 }
+    }
+  };
+
   const datasets = [
     { label: "Fase de grupos", stack: "s", data: players.map(groupTotalOf),
       backgroundColor: players.map(p => p.is_observer ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.2)"),
       datalabels: { display: false } },
-    slotDataset(0), slotDataset(1), slotDataset(2)
+    slotDataset(0), slotDataset(1), slotDataset(2), floorDataset
   ];
+  const floorIdx = datasets.length - 1;
 
   // Y-axis floor just below the leader (not 0) so differences and leaps read clearly.
   const minTotal = Math.min(...players.map(p => p.total));
@@ -585,6 +601,11 @@ function buildPodiumBarChart(canvasId, instanceKey) {
             label: ctx => {
               const p = players[ctx.dataIndex];
               if (ctx.datasetIndex === 0) return `Fase de grupos: ${groupTotalOf(p)}`;
+              if (ctx.datasetIndex === floorIdx) {
+                if (!p.floorPending) return;
+                const flags = (p.floorDrivers || []).flat().map(t => flagOf(t) || t).join(" ");
+                return `Garantido (pendente): ${flags} +${p.floorPending}`;
+              }
               const mi = ctx.datasetIndex - 1, team = p.podiumArr[mi];
               if (!team) return `${MEDALS[mi]} (sem escolha) +20`;
               const v = calcPodiumSlotPts(mi, team, ts);
@@ -961,6 +982,57 @@ function computeActualTournamentState(asOf = Infinity) {
   }
 
   return { champion, runnerUp, third, eliminated, groupStageComplete: true };
+}
+
+// ─── STRUCTURAL PODIUM FLOOR (see specifications/_archive/structural-podium-floor.md) ──
+// Bracket geometry guarantees some podium points before any knockout match is played: at most
+// one team per quarter (an 8-team QF region) can reach the podium, so two podium picks seeded
+// into the same quarter are CERTAIN to cost ≥+20. Surfaced as a SEPARATE projection (a grey pill /
+// pending bar segment) — never folded into `total`, which stays results-driven. Materialises into
+// real points the normal way (via `eliminated`) when a colliding team actually loses. Dormant
+// until groupStageComplete + a fully seeded R32 (16 rows).
+
+// Quarter membership by R32 slot — read straight off the static bracket tree (R32/R16/QF above).
+const PODIUM_QUARTERS = [[0, 1, 2, 4], [8, 9, 10, 11], [3, 5, 6, 7], [12, 13, 14, 15]]; // QF0..QF3
+function slotQuarter(slot) { return PODIUM_QUARTERS.findIndex(q => q.includes(slot)); }
+
+// Concrete team → quarter index, for every team in the seeded R32. Pins each row to its bracket
+// slot via the side resolvable from the actual final standings (the group winner / runner-up); the
+// third-placed team inherits its row's quarter. No best-thirds combinatorics — the seeded R32 is
+// the factual record, standings only supply the slot identity.
+function buildTeamQuarter() {
+  const r32Rows = state.matches.filter(m => m.group_letter === 'R32');
+  if (r32Rows.length < 16) return {};                       // partial seed → dormant
+  const standings = computeStandings(state.matches, m => ({ sa: m.score_a, sb: m.score_b }));
+  const resolve = ph => {
+    if (ph.type === 'third') return null;                   // third is a wildcard, resolved below
+    const t = standings[ph.group];
+    return ph.type === 'winner' ? t?.[0]?.team : t?.[1]?.team;
+  };
+  const slotByTeam = {};                                    // each group winner/RU sits in exactly one slot
+  R32.forEach(({ slot, a, b }) => [a, b].forEach(ph => { const team = resolve(ph); if (team) slotByTeam[team] = slot; }));
+  const teamQuarter = {};
+  r32Rows.forEach(m => {
+    const slot = slotByTeam[m.team_a] ?? slotByTeam[m.team_b];
+    if (slot == null) return;
+    const q = slotQuarter(slot);
+    teamQuarter[m.team_a] = q; teamQuarter[m.team_b] = q;
+  });
+  return teamQuarter;
+}
+
+// Bracket-guaranteed pending points for one player's podium picks. Only ALIVE, qualified picks
+// count — an eliminated / non-qualified pick already scores a real 20 in `total`. Never reads or
+// writes ts.eliminated beyond the alive check. Returns { pending: 0|20|40, drivers: [[team,…],…] }.
+function podiumFloor(podiumArr, ts, teamQuarter) {
+  const byQuarter = {};
+  (podiumArr || []).forEach(t => {
+    if (!t || ts.eliminated.has(t) || teamQuarter[t] == null) return;
+    (byQuarter[teamQuarter[t]] = byQuarter[teamQuarter[t]] || []).push(t);
+  });
+  let pending = 0; const drivers = [];
+  Object.values(byQuarter).forEach(teams => { if (teams.length > 1) { pending += 20 * (teams.length - 1); drivers.push(teams); } });
+  return { pending, drivers };
 }
 
 // ─── GAME-DAY POSITION CHANGES ───────────────────────────────────────
@@ -1754,6 +1826,7 @@ function renderLeaderboard() {
   const played = state.matches.filter(m => m.score_a !== null);
   const progress = state.matches.length > 0 ? (played.length / state.matches.length) * 100 : 0;
   const tournamentState = computeActualTournamentState();
+  const teamQuarter = buildTeamQuarter(); // {} until R32 fully seeded → floor inert
   const lb = state.players.map(p => {
     let total = 0, scored = 0, exacts = 0;
     played.forEach(m => {
@@ -1766,7 +1839,8 @@ function renderLeaderboard() {
     const gamePts = total; // group-game points only, before podium (tie-break criterion 3)
     const podiumPts = calcPodiumPts(podiumArr, tournamentState);
     if (podiumPts !== null) total += podiumPts;
-    return { ...p, total, scored, exacts, gamePts, podiumArr, podiumPts };
+    const floor = podiumFloor(podiumArr, tournamentState, teamQuarter); // bracket-guaranteed, NOT in total
+    return { ...p, total, scored, exacts, gamePts, podiumArr, podiumPts, floorPending: floor.pending, floorDrivers: floor.drivers };
   }).sort((a, b) => compareStandings(a, b, tournamentState));
 
   // Partition by observer status — observers live in their own section (see observer-members.md)
@@ -1862,6 +1936,14 @@ function renderLeaderboard() {
             `${p.scored} jogos · `, h("span", { style: { color: p.exacts > 0 ? "#10b981" : "rgba(255,255,255,0.25)" } }, `${p.exacts} exacto${p.exacts !== 1 ? "s" : ""} ${p.exacts > 0 ? "✓" : ""}`)),
           (!isObserver && tournamentState.groupStageComplete && p.bestRank != null) ? h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.3)", marginTop: "1px", fontWeight: 600 } },
             p.bestRank === p.worstRank ? `Posição final: #${p.bestRank}` : `Possível: #${p.bestRank} – #${p.worstRank}`
+          ) : null,
+          // Structural podium floor — bracket-guaranteed points, pending until the collision plays
+          // out (grey, flags only). Not part of `total`. See structural-podium-floor.md.
+          p.floorPending > 0 ? h("div", { style: { marginTop: "3px" } },
+            h("span", { style: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "rgba(148,163,184,0.95)", background: "rgba(148,163,184,0.14)", border: "1px solid rgba(148,163,184,0.3)", borderRadius: "6px", padding: "1px 6px" } },
+              `+${p.floorPending}`,
+              h("span", { style: { fontSize: "11px" } }, (p.floorDrivers || []).flat().map(t => flagOf(t) || t).join(" "))
+            )
           ) : null
         ),
         h("div", { style: { fontSize: "22px", fontWeight: 900, color: isTop ? "#34d399" : "rgba(255,255,255,0.6)", fontVariantNumeric: "tabular-nums", letterSpacing: "-1px" } }, String(p.total)),
