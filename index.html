@@ -229,6 +229,12 @@ function badgeColor(pts) {
 const TERMINAL_STATUSES = new Set(['finished', 'pen-home', 'pen-away']);
 function isFinal(m) { return TERMINAL_STATUSES.has(m.status); }
 function isLive(m) { return m.status === 'live'; }
+// Group matches carry a single letter A–L; knockout rows carry stage codes
+// (R32/R16/QF/SF/3P) — and the Final, 'F', which is ALSO one character. So "is this
+// a group match?" must test the letter range, never string length: a `length === 1`
+// test mis-counts the Final as a group game, which flips groupStageComplete back off
+// (73 group matches, one unplayed) and disables every knockout feature once 'F' is seeded.
+function isGroupMatch(m) { return !!m && !!m.group_letter && /^[A-L]$/.test(m.group_letter); }
 
 function tournamentStarted() {
   const now = Date.now();
@@ -435,7 +441,7 @@ function buildChart(canvasId, players, instanceKey) {
   // Group matches only — the line chart is the group-stage record. Once knockout rows get
   // scored they'd otherwise add a meaningless flat tail (no KO score-predictions in v0).
   const played = state.matches
-    .filter(m => m.score_a !== null && m.group_letter && m.group_letter.length === 1)
+    .filter(m => m.score_a !== null && isGroupMatch(m))
     .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
 
   const dates = [...new Set(played.map(m => m.kickoff.split("T")[0]))].sort();
@@ -901,7 +907,7 @@ const BRACKET_STRUCTURE = [
 function computeStandings(matches, getScore) {
   const groups = {};
   matches.forEach(m => {
-    if (!m.group_letter || m.group_letter.length !== 1) return;
+    if (!isGroupMatch(m)) return;
     if (!groups[m.group_letter]) groups[m.group_letter] = {};
     [m.team_a, m.team_b].forEach(t => {
       if (!groups[m.group_letter][t]) groups[m.group_letter][t] = { team: t, pts: 0, gd: 0, gf: 0, played: 0 };
@@ -934,7 +940,7 @@ function computeActualTournamentState(asOf = Infinity) {
   const eliminated = new Set();
   let champion = null, runnerUp = null, third = null;
 
-  const groupMatches = state.matches.filter(m => m.group_letter && m.group_letter.length === 1 && inWindow(m));
+  const groupMatches = state.matches.filter(m => isGroupMatch(m) && inWindow(m));
   const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => isFinal(m));
   if (!groupStageComplete) return { champion, runnerUp, third, eliminated, groupStageComplete: false };
 
@@ -1635,9 +1641,9 @@ function renderNav() {
 const KO_STAGE_LABELS = { R32: 'Ronda de 32', R16: 'Oitavos de Final', QF: 'Quartos de Final', SF: 'Meias-Final', '3P': '3º Lugar', F: 'Final' };
 
 function renderMatches() {
-  const groupLetters = state.matches.map(m => m.group_letter).filter(g => g && g.length === 1);
+  const groupLetters = state.matches.filter(isGroupMatch).map(m => m.group_letter);
   const groups = [...new Set(groupLetters)].sort();
-  const groupMatches = state.matches.filter(m => m.group_letter && m.group_letter.length === 1);
+  const groupMatches = state.matches.filter(isGroupMatch);
   const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => isFinal(m));
   const myPreds = state.allPreds[state.currentPlayer?.id] || {};
 
@@ -1649,7 +1655,7 @@ function renderMatches() {
   // Group views (Todos + letters) show GROUP matches only — knockouts live under Fase Final,
   // so a KO row never double-renders here.
   let filtered = state.matches.filter(m => {
-    if (!(m.group_letter && m.group_letter.length === 1)) return false;
+    if (!isGroupMatch(m)) return false;
     if (effectiveFilter !== "all" && effectiveFilter !== "FINAL" && m.group_letter !== effectiveFilter) return false;
     if (state.statusFilter === "played" && m.score_a === null) return false;
     if (state.statusFilter === "upcoming" && m.score_a !== null) return false;
@@ -2107,7 +2113,7 @@ function generateAudit() {
   const tournamentState = computeActualTournamentState();
   const orderedPlayers = playersThenObservers(state.players);
   const groupMatches = [...state.matches]
-    .filter(m => m.group_letter && m.group_letter.length === 1)
+    .filter(isGroupMatch)
     .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
 
   const baseHeader = ["Grupo", "Data", "Equipa A", "Resultado A", "Resultado B", "Equipa B"];
@@ -2202,7 +2208,7 @@ function renderPredictions() {
   const groupMatches = {};
   GROUP_ORDER.forEach(g => { groupMatches[g] = []; });
   [...state.matches]
-    .filter(m => m.group_letter && m.group_letter.length === 1)
+    .filter(isGroupMatch)
     .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff))
     .forEach(m => { if (groupMatches[m.group_letter]) groupMatches[m.group_letter].push(m); });
   const rawStandings = computePredictedStandings(state.editPreds, state.matches);
