@@ -23,7 +23,7 @@ const STAGE_MAP = {
   "QUARTER_FINALS": "QF",
   "SEMI_FINALS":    "SF",
   "THIRD_PLACE":    "3P",
-  "FINAL":          "F"
+  "FINAL":          "FIN"
 };
 
 const TEAM_MAP = require('./team-map');

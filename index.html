@@ -230,10 +230,9 @@ const TERMINAL_STATUSES = new Set(['finished', 'pen-home', 'pen-away']);
 function isFinal(m) { return TERMINAL_STATUSES.has(m.status); }
 function isLive(m) { return m.status === 'live'; }
 // Group matches carry a single letter A–L; knockout rows carry stage codes
-// (R32/R16/QF/SF/3P) — and the Final, 'F', which is ALSO one character. So "is this
-// a group match?" must test the letter range, never string length: a `length === 1`
-// test mis-counts the Final as a group game, which flips groupStageComplete back off
-// (73 group matches, one unplayed) and disables every knockout feature once 'F' is seeded.
+// (R32/R16/QF/SF/3P/FIN). The Final is 'FIN', NOT 'F' — 'F' is Group F, and overloading
+// it made Group F games leak into the Fase Final view and would have mis-counted the
+// Final as a 73rd group match. Test the A–L range explicitly (never string length).
 function isGroupMatch(m) { return !!m && !!m.group_letter && /^[A-L]$/.test(m.group_letter); }
 
 function tournamentStarted() {
@@ -973,7 +972,7 @@ function computeActualTournamentState(asOf = Infinity) {
   }
 
   // Final: winner = champion, loser = runner-up (both on the podium, neither eliminated)
-  const finalMatch = state.matches.find(m => m.group_letter === 'F' && inWindow(m));
+  const finalMatch = state.matches.find(m => m.group_letter === 'FIN' && inWindow(m));
   if (finalMatch) {
     const w = matchWinner(finalMatch);
     if (w) { champion = w; runnerUp = w === finalMatch.team_a ? finalMatch.team_b : finalMatch.team_a; }
@@ -1638,7 +1637,18 @@ function renderNav() {
   );
 }
 
-const KO_STAGE_LABELS = { R32: 'Ronda de 32', R16: 'Oitavos de Final', QF: 'Quartos de Final', SF: 'Meias-Final', '3P': '3º Lugar', F: 'Final' };
+const KO_STAGE_LABELS = { R32: 'Ronda de 32', R16: 'Oitavos de Final', QF: 'Quartos de Final', SF: 'Meias-Final', '3P': '3º Lugar', FIN: 'Final' };
+// KO stages in bracket order; 3P + FIN form one final group shown together (after SF).
+const KO_STAGE_GROUPS = [['R32'], ['R16'], ['QF'], ['SF'], ['3P', 'FIN']];
+// The current stage to display in Fase Final: the first stage with seeded rows that isn't
+// fully finished. Once every stage is complete, keep the final group (3P+FIN) on screen.
+function currentKoStageGroup() {
+  for (const grp of KO_STAGE_GROUPS) {
+    const ms = state.matches.filter(m => grp.includes(m.group_letter));
+    if (ms.length && !ms.every(isFinal)) return grp;
+  }
+  return KO_STAGE_GROUPS[KO_STAGE_GROUPS.length - 1];
+}
 
 function renderMatches() {
   const groupLetters = state.matches.filter(isGroupMatch).map(m => m.group_letter);
@@ -1664,10 +1674,13 @@ function renderMatches() {
   const grouped = {};
   filtered.forEach(m => { if (!grouped[m.group_letter]) grouped[m.group_letter] = []; grouped[m.group_letter].push(m); });
 
-  // Fase Final: read-only knockout results, shown only once live or finished (upcoming hidden).
-  // "Por jogar" yields nothing here by design → placeholder.
-  const koShown = state.statusFilter === "upcoming" ? [] : state.matches
-    .filter(m => KO_STAGE_LABELS[m.group_letter] && (m.score_a !== null || isLive(m)));
+  // Fase Final: show every match of the CURRENT knockout stage (incl. upcoming) — we're "in"
+  // R32 until the last R32 game ends, then R16, etc.; 3P + FIN appear together after the SF.
+  // Future-stage rows stay hidden (their teams are still TBD) until their stage becomes current.
+  const koStageGroup = currentKoStageGroup();
+  const koShown = state.matches
+    .filter(m => koStageGroup.includes(m.group_letter))
+    .sort((a, b) => koMs(a) - koMs(b));
 
   // Shared group-stage match card, used by both the per-group letter views and the chronological
   // "Todos" list. `domId` tags the auto-scroll anchor (chronological view only).
@@ -1730,7 +1743,7 @@ function renderMatches() {
   // Fase Final view — read-only KO results grouped by stage (cards non-clickable: no predictions).
   const koNodes = koShown.length === 0
     ? [ h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: "12px", padding: "30px 0" } }, "A fase final começa em breve.") ]
-    : ['R32','R16','QF','SF','3P','F'].map(stage => {
+    : koStageGroup.map(stage => {
         const ms = koShown.filter(m => m.group_letter === stage);
         if (ms.length === 0) return null;
         return h("div", { style: { marginBottom: "20px" } },
@@ -1884,7 +1897,10 @@ function renderLeaderboard() {
         if (!team || tournamentState.eliminated.has(team)) lockedPP += 20;
         else pending++;
       }
-      p.minTotal = groupTotal + lockedPP;
+      // Best case adds the structural floor: bracket geometry already guarantees ≥+20 from
+      // same-quarter podium collisions, so those points are unavoidable even in the best case.
+      // (floorPending counts only ALIVE picks; lockedPP only ELIMINATED ones — no double count.)
+      p.minTotal = groupTotal + lockedPP + (p.floorPending || 0);
       p.maxTotal = groupTotal + lockedPP + 20 * pending;
     });
     mainLb.forEach(p => {
