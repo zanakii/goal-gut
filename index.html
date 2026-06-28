@@ -1040,6 +1040,50 @@ function podiumFloor(podiumArr, ts, teamQuarter) {
   return { pending, drivers };
 }
 
+// Smallest a.total − b.total reachable across every feasible FINAL podium — the engine behind
+// the possible-rank range. Needed because a podium pick scores against ONE shared outcome: when
+// a and b share a pick, "best for a" and "worst for b" can be mutually exclusive (the LN/PM
+// Argentina-as-runner-up case), which the old independent min/max ignored.
+//
+// A final podium = 3 distinct ALIVE teams in 3 DISTINCT bracket quarters (the real structural
+// limit — each quarter sends one team to the SF, so the champion, runner-up and third sit in
+// three different quarters; this also subsumes the structural floor). Finer geometry (champion
+// vs runner-up opposite halves) is intentionally NOT enforced, so the bound stays conservative —
+// it can over-state what's reachable, never under-state it. Final-podium pick score is terminal:
+// 0 exact slot, 10 on-podium wrong slot, 20 off-podium (every non-podium team ends eliminated).
+function minPodiumGap(a, b, teamQuarter, eliminated) {
+  const relevant = [...new Set([...(a.podiumArr || []), ...(b.podiumArr || [])])]
+    .filter(t => t && !eliminated.has(t));
+  const slotOf = {};                 // team -> podium slot it's placed in (else off-podium)
+  const usedSlot = [false, false, false];
+  const usedQuarter = new Set();
+  const podPts = (picks) => picks.reduce((s, pk, slot) => {
+    if (!pk || eliminated.has(pk)) return s + 20;        // no pick / already out → 20
+    if (slotOf[pk] === slot) return s + 0;               // exact slot
+    if (slotOf[pk] !== undefined) return s + 10;         // on the podium, wrong slot
+    return s + 20;                                       // off the podium
+  }, 0);
+  let best = Infinity;
+  const place = (i) => {
+    if (i === relevant.length) {
+      best = Math.min(best, (a.gamePts + podPts(a.podiumArr)) - (b.gamePts + podPts(b.podiumArr)));
+      return;
+    }
+    const team = relevant[i], q = teamQuarter[team];
+    place(i + 1);                                        // leave this team off the podium
+    if (q == null || !usedQuarter.has(q)) {              // or place it — one team per quarter
+      for (let s = 0; s < 3; s++) {
+        if (usedSlot[s]) continue;
+        usedSlot[s] = true; slotOf[team] = s; if (q != null) usedQuarter.add(q);
+        place(i + 1);
+        usedSlot[s] = false; delete slotOf[team]; if (q != null) usedQuarter.delete(q);
+      }
+    }
+  };
+  place(0);
+  return best;
+}
+
 // ─── GAME-DAY POSITION CHANGES ───────────────────────────────────────
 // A "game day" runs 09:00 Lisbon → 09:00 Lisbon so a full night of matches is one day
 // (the slate runs over the European night; 07:00–18:00 Lisbon is the dead zone). The whole
@@ -1889,26 +1933,21 @@ function renderLeaderboard() {
   }
   // Post-group-stage: possible-rank range + locked classification (skip when N < 2 — no meaningful dinner split)
   if (tournamentState.groupStageComplete && N >= 2) {
-    mainLb.forEach(p => {
-      const groupTotal = p.total - (p.podiumPts ?? 0);
-      let lockedPP = 0, pending = 0;
-      for (let i = 0; i < 3; i++) {
-        const team = p.podiumArr[i];
-        if (!team || tournamentState.eliminated.has(team)) lockedPP += 20;
-        else pending++;
-      }
-      // Best case adds the structural floor: bracket geometry already guarantees ≥+20 from
-      // same-quarter podium collisions, so those points are unavoidable even in the best case.
-      // (floorPending counts only ALIVE picks; lockedPP only ELIMINATED ones — no double count.)
-      p.minTotal = groupTotal + lockedPP + (p.floorPending || 0);
-      p.maxTotal = groupTotal + lockedPP + 20 * pending;
-    });
-    mainLb.forEach(p => {
-      const ahead = mainLb.filter(q => q.id !== p.id && q.maxTotal < p.minTotal).length;
-      const behind = mainLb.filter(q => q.id !== p.id && q.minTotal > p.maxTotal).length;
-      p.bestRank = 1 + ahead;
-      p.worstRank = N - behind;
-      p.locked = p.worstRank <= T ? "green" : p.bestRank > T ? "red" : null;
+    // Pairwise, not per-player min/max: everyone scores against ONE actual podium, so two
+    // players who SHARE a pick can't both get their dream outcome (A needing Argentina as
+    // runner-up for 0 forces B's Argentina-RU to 0 too, not +20). minPodiumGap(a,b) returns
+    // the smallest a.total − b.total over every feasible final podium; a can finish ahead-of
+    // -or-level with b iff that's ≤ 0. See podiumGap helper above.
+    mainLb.forEach(a => {
+      let ahead = 0, behind = 0;
+      mainLb.forEach(b => {
+        if (a.id === b.id) return;
+        if (minPodiumGap(a, b, teamQuarter, tournamentState.eliminated) > 0) ahead++;   // a can never catch b
+        if (minPodiumGap(b, a, teamQuarter, tournamentState.eliminated) > 0) behind++;   // b can never catch a
+      });
+      a.bestRank = 1 + ahead;
+      a.worstRank = N - behind;
+      a.locked = a.worstRank <= T ? "green" : a.bestRank > T ? "red" : null;
     });
   }
 
