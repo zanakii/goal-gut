@@ -1949,7 +1949,7 @@ function renderLeaderboard() {
       h("button", { className: `lb-row ${classifClass} ${isTop ? "top" : ""} ${isExp ? "expanded-top" : ""}`, onClick: () => { const e = { ...state.expanded }; e[p.id] = !e[p.id]; setState({ expanded: e }); } },
         h("div", { style: { width: "28px", textAlign: "center" } },
           h("div", { style: { fontSize: showMedal ? "18px" : "14px", fontWeight: 800, color: "rgba(255,255,255,0.3)" } }, showMedal ? medals[p.rank - 1] : String(p.rank)),
-          (!isObserver && p.locked) ? h("div", { style: { fontSize: "9px", marginTop: "1px", lineHeight: 1 } }, "🔒") : null,
+          (!isObserver && p.bestRank != null && p.bestRank === p.worstRank) ? h("div", { style: { fontSize: "9px", marginTop: "1px", lineHeight: 1 } }, "🔒") : null,
           arrow ? h("div", { style: { fontSize: "9px", fontWeight: 700, marginTop: "1px", lineHeight: 1, color: arrow.c } }, arrow.t) : null
         ),
         h("div", { style: { flex: 1 } },
