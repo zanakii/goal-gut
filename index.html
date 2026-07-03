@@ -556,7 +556,7 @@ function buildPodiumBarChart(canvasId, instanceKey) {
     backgroundColor: players.map(p => p.is_observer ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.45)"),
     datalabels: {
       display: ctx => ctx.dataset.data[ctx.dataIndex] >= 20,
-      formatter: (_v, ctx) => (players[ctx.dataIndex].floorDrivers || []).flat().map(t => flagOf(t) || "").join(""),
+      formatter: (_v, ctx) => [...new Set((players[ctx.dataIndex].floorDrivers || []).flat())].map(t => flagOf(t) || "").join(""),
       color: "rgba(255,255,255,0.9)", font: { size: 10 }
     }
   };
@@ -608,7 +608,7 @@ function buildPodiumBarChart(canvasId, instanceKey) {
               if (ctx.datasetIndex === 0) return `Fase de grupos: ${groupTotalOf(p)}`;
               if (ctx.datasetIndex === floorIdx) {
                 if (!p.floorPending) return;
-                const flags = (p.floorDrivers || []).flat().map(t => flagOf(t) || t).join(" ");
+                const flags = [...new Set((p.floorDrivers || []).flat())].map(t => flagOf(t) || t).join(" ");
                 return `Garantido (pendente): ${flags} +${p.floorPending}`;
               }
               const mi = ctx.datasetIndex - 1, team = p.podiumArr[mi];
@@ -992,10 +992,12 @@ function computeActualTournamentState(asOf = Infinity) {
 // ─── STRUCTURAL PODIUM FLOOR (see specifications/_archive/structural-podium-floor.md) ──
 // Bracket geometry guarantees some podium points before any knockout match is played: at most
 // one team per quarter (an 8-team QF region) can reach the podium, so two podium picks seeded
-// into the same quarter are CERTAIN to cost ≥+20. Surfaced as a SEPARATE projection (a grey pill /
-// pending bar segment) — never folded into `total`, which stays results-driven. Materialises into
-// real points the normal way (via `eliminated`) when a colliding team actually loses. Dormant
-// until groupStageComplete + a fully seeded R32 (16 rows).
+// into the same quarter are CERTAIN to cost ≥+20. Likewise at most one team per HALF (two
+// quarters feeding one SF) can reach the final, so 1st + 2nd picks in the same half are CERTAIN
+// to cost ≥+10 — the SF loser finishes 3rd at best, a wrong slot for either pick. Surfaced as a
+// SEPARATE projection (a grey pill / pending bar segment) — never folded into `total`, which
+// stays results-driven. Materialises into real points the normal way (via `eliminated`) when a
+// colliding team actually loses. Dormant until groupStageComplete + a fully seeded R32 (16 rows).
 
 // Quarter membership by R32 slot — read straight off the static bracket tree (R32/R16/QF above).
 const PODIUM_QUARTERS = [[0, 1, 2, 4], [8, 9, 10, 11], [3, 5, 6, 7], [12, 13, 14, 15]]; // QF0..QF3
@@ -1028,7 +1030,7 @@ function buildTeamQuarter() {
 
 // Bracket-guaranteed pending points for one player's podium picks. Only ALIVE, qualified picks
 // count — an eliminated / non-qualified pick already scores a real 20 in `total`. Never reads or
-// writes ts.eliminated beyond the alive check. Returns { pending: 0|20|40, drivers: [[team,…],…] }.
+// writes ts.eliminated beyond the alive check. Returns { pending: 0|10|20|…, drivers: [[team,…],…] }.
 function podiumFloor(podiumArr, ts, teamQuarter) {
   const byQuarter = {};
   (podiumArr || []).forEach(t => {
@@ -1037,6 +1039,13 @@ function podiumFloor(podiumArr, ts, teamQuarter) {
   });
   let pending = 0; const drivers = [];
   Object.values(byQuarter).forEach(teams => { if (teams.length > 1) { pending += 20 * (teams.length - 1); drivers.push(teams); } });
+  // Half rule: 1st + 2nd picks alive in the same half but DIFFERENT quarters (same-quarter pairs
+  // are already the +20 above) → the projected-SF loser is 3rd at best, wrong slot either way: +10.
+  // Only the 1st/2nd pair — a 3rd pick sharing a half can still land exactly 3rd for 0.
+  const [p1, p2] = podiumArr || [];
+  const alive = t => t && !ts.eliminated.has(t) ? teamQuarter[t] : null;
+  const q1 = alive(p1), q2 = alive(p2);
+  if (q1 != null && q2 != null && q1 !== q2 && (q1 >> 1) === (q2 >> 1)) { pending += 10; drivers.push([p1, p2]); }
   return { pending, drivers };
 }
 
@@ -1045,10 +1054,10 @@ function podiumFloor(podiumArr, ts, teamQuarter) {
 // a and b share a pick, "best for a" and "worst for b" can be mutually exclusive (the LN/PM
 // Argentina-as-runner-up case), which the old independent min/max ignored.
 //
-// A final podium = 3 distinct ALIVE teams in 3 DISTINCT bracket quarters (the real structural
-// limit — each quarter sends one team to the SF, so the champion, runner-up and third sit in
-// three different quarters; this also subsumes the structural floor). Finer geometry (champion
-// vs runner-up opposite halves) is intentionally NOT enforced, so the bound stays conservative —
+// A final podium = 3 distinct ALIVE teams in 3 DISTINCT bracket quarters, with champion and
+// runner-up in OPPOSITE halves (they meet in the final; each quarter sends one team to the SF,
+// each half one to the final — this subsumes the structural floor, quarter and half rules alike).
+// Teams whose quarter is unknown carry no constraint, so the bound stays conservative —
 // it can over-state what's reachable, never under-state it. Final-podium pick score is terminal:
 // 0 exact slot, 10 on-podium wrong slot, 20 off-podium (every non-podium team ends eliminated).
 function minPodiumGap(a, b, teamQuarter, eliminated) {
@@ -1057,6 +1066,7 @@ function minPodiumGap(a, b, teamQuarter, eliminated) {
   const slotOf = {};                 // team -> podium slot it's placed in (else off-podium)
   const usedSlot = [false, false, false];
   const usedQuarter = new Set();
+  const halfOfSlot = [null, null];   // bracket half occupying the champion / runner-up slot
   const podPts = (picks) => picks.reduce((s, pk, slot) => {
     if (!pk || eliminated.has(pk)) return s + 20;        // no pick / already out → 20
     if (slotOf[pk] === slot) return s + 0;               // exact slot
@@ -1074,9 +1084,13 @@ function minPodiumGap(a, b, teamQuarter, eliminated) {
     if (q == null || !usedQuarter.has(q)) {              // or place it — one team per quarter
       for (let s = 0; s < 3; s++) {
         if (usedSlot[s]) continue;
-        usedSlot[s] = true; slotOf[team] = s; if (q != null) usedQuarter.add(q);
+        // champion & runner-up meet in the final, so they come from opposite halves
+        if (q != null && s < 2 && halfOfSlot[1 - s] === (q >> 1)) continue;
+        usedSlot[s] = true; slotOf[team] = s;
+        if (q != null) { usedQuarter.add(q); if (s < 2) halfOfSlot[s] = q >> 1; }
         place(i + 1);
-        usedSlot[s] = false; delete slotOf[team]; if (q != null) usedQuarter.delete(q);
+        usedSlot[s] = false; delete slotOf[team];
+        if (q != null) { usedQuarter.delete(q); if (s < 2) halfOfSlot[s] = null; }
       }
     }
   };
@@ -2003,7 +2017,7 @@ function renderLeaderboard() {
           p.floorPending > 0 ? h("div", { style: { marginTop: "3px" } },
             h("span", { style: { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "10px", fontWeight: 700, color: "rgba(148,163,184,0.95)", background: "rgba(148,163,184,0.14)", border: "1px solid rgba(148,163,184,0.3)", borderRadius: "6px", padding: "1px 6px" } },
               `+${p.floorPending}`,
-              h("span", { style: { fontSize: "11px" } }, (p.floorDrivers || []).flat().map(t => flagOf(t) || t).join(" "))
+              h("span", { style: { fontSize: "11px" } }, [...new Set((p.floorDrivers || []).flat())].map(t => flagOf(t) || t).join(" "))
             )
           ) : null
         ),
