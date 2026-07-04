@@ -206,7 +206,7 @@ async function poll() {
   console.log(`API requests remaining this minute: ${r.headers.get("x-requests-available-minute") ?? "n/a"}`);
   console.log(`Matches returned: ${upstream.length}`);
 
-  let updated = 0, corrected = 0, resolved = 0, unchanged = 0, unpairedUpstream = 0, unpairedDb = 0;
+  let updated = 0, corrected = 0, resolved = 0, unchanged = 0, unpairedUpstream = 0, unpairedDb = 0, bracketGaps = 0;
 
   // ── Upstream -> our rows, paired on fd_match_id ──
   for (const match of upstream) {
@@ -291,7 +291,56 @@ async function poll() {
     }
   }
 
-  const summary = { updated, corrected, resolved, unchanged, unpairedUpstream, unpairedDb };
+  // ── Bracket integrity: once a stage is fully decided, every team it produces
+  // (winners → next round; SF losers → 3rd-place match) must fill a slot in the
+  // round it feeds. A null slot here is the Brasil-v-Noruega bug — a pairing that
+  // never got written. The poller can't derive the missing team itself (no bracket
+  // map — it only mirrors upstream), so it warns loudly and names the team by
+  // set-difference so it can be back-filled. Mirrors check-bracket.js.
+  {
+    const { data: koRows } = await supabase
+      .from("matches")
+      .select("group_letter, team_a, team_b, score_a, score_b, status")
+      .in("group_letter", ["R32", "R16", "QF", "SF", "3P", "FIN"]);
+    if (koRows) {
+      const winnerOf = (m: any) =>
+        m.score_a == null ? null
+          : m.score_a > m.score_b ? m.team_a
+          : m.score_b > m.score_a ? m.team_b
+          : m.status === "pen-home" ? m.team_a
+          : m.status === "pen-away" ? m.team_b : null;
+      const loserOf = (m: any) => {
+        const w = winnerOf(m);
+        return w == null ? null : w === m.team_a ? m.team_b : m.team_a;
+      };
+      const byStage = (g: string) => koRows.filter((m) => m.group_letter === g);
+      const teamsIn = (g: string) =>
+        new Set(byStage(g).flatMap((m) => [m.team_a, m.team_b]).filter(Boolean));
+      const allTerminal = (g: string) => {
+        const rows = byStage(g);
+        return rows.length > 0 && rows.every((m) => TERMINAL.includes(m.status));
+      };
+      const nullSlots = (g: string) =>
+        byStage(g).reduce((n, m) => n + (m.team_a == null ? 1 : 0) + (m.team_b == null ? 1 : 0), 0);
+      // [feeder stage, stage it feeds, what the feeder contributes]
+      const FEEDS: [string, string, (m: any) => string | null][] = [
+        ["R32", "R16", winnerOf], ["R16", "QF", winnerOf], ["QF", "SF", winnerOf],
+        ["SF", "FIN", winnerOf], ["SF", "3P", loserOf],
+      ];
+      for (const [stage, next, produce] of FEEDS) {
+        if (!allTerminal(stage)) continue;
+        const present = teamsIn(next);
+        const missing = byStage(stage).map(produce).filter((t): t is string => !!t && !present.has(t));
+        const holes = nullSlots(next);
+        if (missing.length || holes) {
+          console.warn(`  ⚠ bracket gap: ${stage} complete but ${next} has ${holes} unfilled slot(s); missing: ${missing.join(", ") || "unknown"}`);
+          bracketGaps++;
+        }
+      }
+    }
+  }
+
+  const summary = { updated, corrected, resolved, unchanged, unpairedUpstream, unpairedDb, bracketGaps };
   console.log(`Done. ${JSON.stringify(summary)}`);
   return summary;
 }
