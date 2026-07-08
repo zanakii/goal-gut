@@ -1,0 +1,5 @@
+# Normalise line endings to LF in the repository. With core.autocrlf=true on
+# Windows an edited file can otherwise land mixed CRLF/LF in its blob, ballooning
+# an otherwise small diff (index.html did this once). Blobs stay LF; working-tree
+# checkouts may still be CRLF locally, which is fine.
+* text=auto eol=lf
