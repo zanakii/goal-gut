@@ -1122,7 +1122,7 @@ function minPodiumGap(a, b, teamQuarter, eliminated) {
 // favourable set of triples is distilled into podium-slot conditions. Unlike minPodiumGap (a
 // total-only bound), this is exact.
 const CONTAS_MAX_PENDING = 10;  // 2^10 bracket completions ≈ a few ms; keeps an R16-era render inert
-const CONTAS_OUTRO = ' outro';   // sentinel podium-slot value: a team nobody still picked
+const CONTAS_OUTRO = '__outro__';   // sentinel podium-slot value: a team nobody still picked
 
 // The knockout tree as a flat node list in play order. Participants are references — a concrete
 // team (R32, from the seeded rows) or the winner/loser of an earlier node (3P takes SF losers).
