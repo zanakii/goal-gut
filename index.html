@@ -1003,13 +1003,14 @@ function computeActualTournamentState(asOf = Infinity) {
 const PODIUM_QUARTERS = [[0, 1, 2, 4], [8, 9, 10, 11], [3, 5, 6, 7], [12, 13, 14, 15]]; // QF0..QF3
 function slotQuarter(slot) { return PODIUM_QUARTERS.findIndex(q => q.includes(slot)); }
 
-// Concrete team → quarter index, for every team in the seeded R32. Pins each row to its bracket
-// slot via the side resolvable from the actual final standings (the group winner / runner-up); the
-// third-placed team inherits its row's quarter. No best-thirds combinatorics — the seeded R32 is
-// the factual record, standings only supply the slot identity.
-function buildTeamQuarter() {
+// R32 tree slot → seeded DB row. Pins each row to its static-bracket slot via the side
+// resolvable from the actual final standings (the group winner / runner-up — every R32 slot has
+// at least one such side); the third-placed team inherits its row's slot. No best-thirds
+// combinatorics — the seeded R32 is the factual record, standings only supply the slot identity.
+// Returns null until the R32 is fully seeded and every row is pinned.
+function r32RowsBySlot() {
   const r32Rows = state.matches.filter(m => m.group_letter === 'R32');
-  if (r32Rows.length < 16) return {};                       // partial seed → dormant
+  if (r32Rows.length < 16) return null;                     // partial seed → dormant
   const standings = computeStandings(state.matches, m => ({ sa: m.score_a, sb: m.score_b }));
   const resolve = ph => {
     if (ph.type === 'third') return null;                   // third is a wildcard, resolved below
@@ -1018,11 +1019,23 @@ function buildTeamQuarter() {
   };
   const slotByTeam = {};                                    // each group winner/RU sits in exactly one slot
   R32.forEach(({ slot, a, b }) => [a, b].forEach(ph => { const team = resolve(ph); if (team) slotByTeam[team] = slot; }));
-  const teamQuarter = {};
+  const bySlot = {};
   r32Rows.forEach(m => {
     const slot = slotByTeam[m.team_a] ?? slotByTeam[m.team_b];
-    if (slot == null) return;
-    const q = slotQuarter(slot);
+    if (slot != null) bySlot[slot] = m;
+  });
+  // May be partially pinned (an unresolvable row is simply absent) — callers decide how much
+  // they need: buildTeamQuarter degrades per-quarter, buildKoEngine requires all 16.
+  return bySlot;
+}
+
+// Concrete team → quarter index, for every team in the seeded R32.
+function buildTeamQuarter() {
+  const bySlot = r32RowsBySlot();
+  if (!bySlot) return {};                                   // partial seed → dormant
+  const teamQuarter = {};
+  Object.entries(bySlot).forEach(([slot, m]) => {
+    const q = slotQuarter(Number(slot));
     teamQuarter[m.team_a] = q; teamQuarter[m.team_b] = q;
   });
   return teamQuarter;
@@ -1098,6 +1111,201 @@ function minPodiumGap(a, b, teamQuarter, eliminated) {
   return best;
 }
 
+// ─── CONTAS — objective-condition engine (see specifications/knockout-objective-conditions.md) ──
+// What must still happen for a player to (a) finish 1st, (b) avoid paying the dinner. Knockout
+// rows carry no per-match predictions, so the only scoring uncertainty left is the final podium
+// — and podium points depend ONLY on the (champion, runner-up, third) triple, never the path to
+// it. So we enumerate the reachable podium TRIPLES, collapsing every team nobody still-alive
+// picked into OUTRO (a guaranteed 20 for everyone — its identity can't matter), and for each
+// triple rank the pool under the REAL tie-break (total → champion pick → group points; exact
+// scores are a display-only tiebreak, NOT counted, so a level pair is TIED). Each player's
+// favourable set of triples is distilled into podium-slot conditions. Unlike minPodiumGap (a
+// total-only bound), this is exact.
+const CONTAS_MAX_PENDING = 10;  // 2^10 bracket completions ≈ a few ms; keeps an R16-era render inert
+const CONTAS_OUTRO = ' outro';   // sentinel podium-slot value: a team nobody still picked
+
+// The knockout tree as a flat node list in play order. Participants are references — a concrete
+// team (R32, from the seeded rows) or the winner/loser of an earlier node (3P takes SF losers).
+function buildKoEngine() {
+  const bySlot = r32RowsBySlot();
+  if (!bySlot) return null;                                 // R32 not fully seeded → dormant
+  // Unlike buildTeamQuarter, the engine needs the WHOLE tree: every slot pinned, both teams
+  // known — otherwise participant propagation would crash or enumerate a fictional bracket.
+  for (let s = 0; s < 16; s++) {
+    const m = bySlot[s];
+    if (!m || !m.team_a || !m.team_b) return null;
+  }
+  const nodes = [];
+  const add = (key, stage, aRef, bRef) => nodes.push({ key, stage, aRef, bRef, bit: -1 });
+  R32.forEach(n => add(`R32-${n.slot}`, 'R32', { team: bySlot[n.slot].team_a }, { team: bySlot[n.slot].team_b }));
+  R16.forEach(n => add(`R16-${n.slot}`, 'R16', { winnerOf: `R32-${n.a.slot}` }, { winnerOf: `R32-${n.b.slot}` }));
+  QF.forEach(n => add(`QF-${n.slot}`, 'QF', { winnerOf: `R16-${n.a.slot}` }, { winnerOf: `R16-${n.b.slot}` }));
+  SF.forEach(n => add(`SF-${n.slot}`, 'SF', { winnerOf: `QF-${n.a.slot}` }, { winnerOf: `QF-${n.b.slot}` }));
+  add('3P-0', '3P', { loserOf: 'SF-0' }, { loserOf: 'SF-1' });
+  add('FIN-0', 'FIN', { winnerOf: 'SF-0' }, { winnerOf: 'SF-1' });
+
+  // A node's DB row is found by unordered team pairing within its stage — no slot column needed.
+  // A row whose teams are still TBD can't be matched, but such a node can't have a result either.
+  const rowFor = (stage, x, y) => state.matches.find(m => m.group_letter === stage &&
+    ((m.team_a === x && m.team_b === y) || (m.team_a === y && m.team_b === x)));
+
+  // Reality pass: resolve every node from actual results only. A live match is NOT resolved —
+  // either side can still win — so it stays a pending node.
+  const real = {};
+  nodes.forEach(n => {
+    const side = ref => ref.team ?? (ref.winnerOf ? real[ref.winnerOf].winner : real[ref.loserOf].loser) ?? null;
+    const a = side(n.aRef), b = side(n.bRef);
+    const m = (a && b) ? rowFor(n.stage, a, b) : null;
+    const winner = (m && isFinal(m)) ? matchWinner(m) : null;
+    real[n.key] = { a, b, winner, loser: winner ? (winner === a ? b : a) : null };
+  });
+  const pending = nodes.filter(n => !real[n.key].winner);
+  pending.forEach((n, i) => { n.bit = i; });
+
+  // Hypothesis pass: complete the bracket on top of reality. bitAt(node) → 0 (side a wins),
+  // 1 (side b), or null (leave open). With every pending bit set, all participants resolve
+  // concretely; under a partial term they may stay null ("some team").
+  const resolve = bitAt => {
+    const out = {};
+    nodes.forEach(n => {
+      const side = ref => ref.team ?? (ref.winnerOf ? out[ref.winnerOf].winner : out[ref.loserOf].loser) ?? null;
+      const a = side(n.aRef), b = side(n.bRef);
+      let { winner, loser } = real[n.key];
+      if (!winner) {
+        const bit = bitAt(n);
+        if (bit !== null) { winner = bit === 0 ? a : b; loser = bit === 0 ? b : a; }
+      }
+      out[n.key] = { a, b, winner, loser };
+    });
+    return out;
+  };
+  return { nodes, pending, resolve };
+}
+
+// The real tie-break, exact scores EXCLUDED (see header): total → champion pick → group points.
+function contasCmp(a, b, ts) {
+  return (a.total - b.total)
+      || (champKey(a, ts) - champKey(b, ts))
+      || ((a.gamePts ?? a.total) - (b.gamePts ?? b.total));
+}
+
+// Enumerate every reachable podium TRIPLE (champion, runner-up, third), collapsing any team
+// nobody still-alive picked to CONTAS_OUTRO — two triples that differ only in an unpicked slot
+// are one scoring class. Per class, rank the pool by contasCmp and record, per player, whether
+// they finish 1st (shared 1st counts) and whether they pay (bottom half: ≥ T players ahead).
+function enumeratePodiumClasses(rows, engine, eliminated) {
+  const k = engine.pending.length, N = rows.length, T = Math.floor(N / 2);
+  const allTeams = new Set();
+  state.matches.filter(isGroupMatch).forEach(m => { allTeams.add(m.team_a); allTeams.add(m.team_b); });
+  const picked = [...new Set(rows.flatMap(r => r.podiumArr).filter(t => t && !eliminated.has(t)))];
+  const lbl = t => picked.includes(t) ? t : CONTAS_OUTRO;
+  const sRows = rows.map(r => ({ id: r.id, gamePts: r.gamePts, podiumArr: r.podiumArr, total: 0 }));
+  const seen = new Set(), classes = [];
+  for (let mask = 0; mask < (1 << k); mask++) {
+    const out = engine.resolve(n => (mask >> n.bit) & 1);
+    const champion = out['FIN-0'].winner, runnerUp = out['FIN-0'].loser, third = out['3P-0'].winner;
+    const c = lbl(champion), r = lbl(runnerUp), t = lbl(third), key = `${c}|${r}|${t}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const elim = new Set(); allTeams.forEach(x => { if (x !== champion && x !== runnerUp && x !== third) elim.add(x); });
+    const ts = { groupStageComplete: true, champion, runnerUp, third, eliminated: elim };
+    sRows.forEach(p => { p.total = p.gamePts + calcPodiumPts(p.podiumArr, ts); });   // terminal → never null
+    const first = new Set(), pays = new Set();
+    sRows.forEach(p => {
+      let ahead = 0;
+      sRows.forEach(q => { if (q.id !== p.id && contasCmp(q, p, ts) < 0) ahead++; });
+      if (ahead === 0) first.add(p.id);       // nobody strictly ahead → shares 1st
+      if (ahead >= T) pays.add(p.id);          // ≥ T players ahead → bottom half → pays
+    });
+    classes.push({ c, r, t, first, pays });
+  }
+  return classes;
+}
+
+// Podium-slot predicates over a relevant team X (X is always a real team, never OUTRO), in
+// strength order so a weaker one can be dropped when a stronger one that implies it holds.
+const CONTAS_ROLES = [
+  { id: 'campeao',  holds: (X, c) => c.c === X,                      implies: ['final', 'podio'], label: X => `${teamWithFlag(X)} campeã` },
+  { id: 'vice',     holds: (X, c) => c.r === X,                      implies: ['final', 'podio'], label: X => `${teamWithFlag(X)} vice-campeã` },
+  { id: 'terceiro', holds: (X, c) => c.t === X,                      implies: ['podio'],          label: X => `${teamWithFlag(X)} em 3º` },
+  { id: 'final',    holds: (X, c) => c.c === X || c.r === X,         implies: ['podio'],          label: X => `${teamWithFlag(X)} na final` },
+  { id: 'podio',    holds: (X, c) => c.c === X || c.r === X || c.t === X, implies: [],            label: X => `${teamWithFlag(X)} no pódio` },
+  { id: 'fora',     holds: (X, c) => c.c !== X && c.r !== X && c.t !== X, implies: [],            label: X => `${teamWithFlag(X)} fora do pódio` },
+];
+
+// Facts that hold across ALL classes in set S: per relevant team, the strongest true role; plus
+// a champion-membership fact when the champion is constrained (stated whichever way is shorter).
+function contasFacts(S, picked, allChamps) {
+  const facts = [];
+  for (const X of picked) {
+    const holding = CONTAS_ROLES.filter(role => S.every(c => role.holds(X, c)));
+    holding.filter(role => !holding.some(o => o.implies.includes(role.id)))
+           .forEach(role => facts.push({ id: role.id, text: role.label(X), holds: c => role.holds(X, c) }));
+  }
+  const inC = [...new Set(S.map(c => c.c))];
+  if (inC.length < allChamps.length && !facts.some(f => f.id === 'campeao')) {
+    const outC = allChamps.filter(c => !inC.includes(c));
+    const nm = t => t === CONTAS_OUTRO ? 'outro' : teamWithFlag(t);
+    facts.push(inC.length <= outC.length
+      ? { id: 'champ', text: `campeão: ${inC.map(nm).join(' ou ')}`, holds: c => inC.includes(c.c) }
+      : { id: 'champ', text: `campeão não é ${outC.map(nm).join(' nem ')}`, holds: c => !outC.includes(c.c) });
+  }
+  return facts;
+}
+
+// One objective → a Portuguese sentence, describing the SMALLER of {achieved, not-achieved} so a
+// near-locked player reads the few ways their outcome could flip. verbPos/verbNeg carry polarity.
+// null when the objective is closed (achieved in all classes, or none).
+function contasSentence(achieved, classes, picked, allChamps, verbPos, verbNeg) {
+  if (achieved.length === 0 || achieved.length === classes.length) return null;
+  const comp = classes.filter(c => !achieved.includes(c));
+  const usePos = achieved.length <= comp.length;
+  const S = usePos ? achieved : comp, verb = usePos ? verbPos : verbNeg;
+  const facts = contasFacts(S, picked, allChamps);
+  if (!facts.length) return `${verb} em ${S.length} de ${classes.length} cenários — depende de vários resultados`;
+  const exact = classes.filter(c => facts.every(f => f.holds(c))).length === S.length;
+  const list = facts.slice(0, 4).map(f => f.text).join(' e ');
+  return exact ? `${verb} se ${list}` : `${verb} se ${list} — depende de outros resultados`;
+}
+
+// Shared enumeration, memoized on the standings snapshot — identical for every row. The key
+// fingerprints ALL matches (not just knockouts): the R32 slot pinning that seeds the engine is
+// derived from the final group standings, so a post-hoc group-score correction that reorders a
+// group must invalidate the cache even if it leaves every player's gamePts/exacts unchanged.
+let contasMemo = { key: null, value: null };
+function contasData(rows) {
+  const key = JSON.stringify([
+    state.matches.map(m => [m.id, m.status, m.team_a, m.team_b, m.score_a, m.score_b]),
+    rows.map(r => [r.id, r.gamePts, r.exacts, r.podiumArr]),
+  ]);
+  if (contasMemo.key === key) return contasMemo.value;
+  const engine = buildKoEngine();
+  let value = null;
+  if (engine && engine.pending.length > 0 && engine.pending.length <= CONTAS_MAX_PENDING) {
+    const eliminated = computeActualTournamentState().eliminated;
+    const classes = enumeratePodiumClasses(rows, engine, eliminated);
+    const picked = [...new Set(rows.flatMap(r => r.podiumArr).filter(t => t && !eliminated.has(t)))];
+    const allChamps = [...new Set(classes.map(c => c.c))];
+    value = { classes, picked, allChamps, conds: new Map() };
+  }
+  contasMemo = { key, value };
+  return value;
+}
+
+// Per-player conditions, lazily built (only for expanded rows) and cached. Returns the two
+// sentences (1st place, dinner) or null when both objectives are closed for this player.
+function playerConditions(data, playerId) {
+  if (!data.conds.has(playerId)) {
+    const { classes, picked, allChamps } = data;
+    const firstSet = classes.filter(c => c.first.has(playerId));
+    const eatSet = classes.filter(c => !c.pays.has(playerId));       // "does not pay" = eats
+    const first = contasSentence(firstSet, classes, picked, allChamps, 'Ficas 1º', 'Só falhas o 1º');
+    const jantar = contasSentence(eatSet, classes, picked, allChamps, 'Não pagas', 'Só pagas');
+    data.conds.set(playerId, (first || jantar) ? { first, jantar } : null);
+  }
+  return data.conds.get(playerId);
+}
+
 // ─── GAME-DAY POSITION CHANGES ───────────────────────────────────────
 // A "game day" runs 09:00 Lisbon → 09:00 Lisbon so a full night of matches is one day
 // (the slate runs over the European night; 07:00–18:00 Lisbon is the dead zone). The whole
@@ -1145,18 +1353,43 @@ function standingsAsOf(cutoff) {
   });
 }
 
-// Ranks (per pool) and dinner-half (non-observers) as of a cutoff.
+// Board shape, single source of truth: sort by the tie-break ladder, assign competition ranks
+// (genuine ties share a rank, the next skips — see leaderboard-tie-breaks.md), classify the
+// dinner split with the cutoff-tie neutralisation (see leaderboard-v0-dinner-split.md).
+// Mutates rows (.rank; .dinnerHalf on non-observers) and returns both pools sorted. Used by the
+// live leaderboard, the game-day boards AND the Contas scenario boards.
+function classifyBoard(rows, ts) {
+  const sorted = [...rows].sort((a, b) => compareStandings(a, b, ts));
+  const main = sorted.filter(p => !p.is_observer);
+  const obs = sorted.filter(p => p.is_observer);
+  const assignRanks = list => list.forEach((p, i) => {
+    p.rank = (i > 0 && sameRank(list[i - 1], p, ts)) ? list[i - 1].rank : i + 1;
+  });
+  assignRanks(main);
+  assignRanks(obs);
+  const N = main.length, T = Math.floor(N / 2);
+  main.forEach((p, i) => { p.dinnerHalf = N >= 2 ? ((i + 1) <= T ? "top" : "bottom") : "neutral"; });
+  // Tied across the cutoff: if rank T and T+1 share (total, exacts), neutralise the tied block
+  if (T >= 1 && N > T) {
+    const a = main[T - 1], b = main[T];
+    if (a.total === b.total && a.exacts === b.exacts) {
+      let lo = T - 1, hi = T;
+      while (lo > 0 && main[lo - 1].total === a.total && main[lo - 1].exacts === a.exacts) lo--;
+      while (hi < N - 1 && main[hi + 1].total === a.total && main[hi + 1].exacts === a.exacts) hi++;
+      for (let i = lo; i <= hi; i++) main[i].dinnerHalf = "neutral";
+    }
+  }
+  return { main, obs };
+}
+
+// Ranks (per pool) and dinner-half (non-observers) as of a cutoff — the same classifyBoard as
+// the live leaderboard, so ranks are competition-style and cutoff ties neutralise here too.
 function boardAsOf(cutoff) {
   const ts = computeActualTournamentState(cutoff);
-  const rows = standingsAsOf(cutoff).sort((a, b) => compareStandings(a, b, ts));
-  const main = rows.filter(p => !p.is_observer);
-  const obs = rows.filter(p => p.is_observer);
-  const rankById = new Map();
-  main.forEach((p, i) => rankById.set(p.id, i + 1));
-  obs.forEach((p, i) => rankById.set(p.id, i + 1));
-  const N = main.length, T = Math.floor(N / 2);
-  const halfById = new Map();
-  main.forEach((p, i) => halfById.set(p.id, N >= 2 ? ((i + 1) <= T ? "top" : "bottom") : "neutral"));
+  const { main, obs } = classifyBoard(standingsAsOf(cutoff), ts);
+  const rankById = new Map(), halfById = new Map();
+  [...main, ...obs].forEach(p => rankById.set(p.id, p.rank));
+  main.forEach(p => halfById.set(p.id, p.dinnerHalf));
   return { rankById, halfById, main, obs };
 }
 
@@ -1918,33 +2151,14 @@ function renderLeaderboard() {
     if (podiumPts !== null) total += podiumPts;
     const floor = podiumFloor(podiumArr, tournamentState, teamQuarter); // bracket-guaranteed, NOT in total
     return { ...p, total, scored, exacts, gamePts, podiumArr, podiumPts, floorPending: floor.pending, floorDrivers: floor.drivers };
-  }).sort((a, b) => compareStandings(a, b, tournamentState));
-
-  // Partition by observer status — observers live in their own section (see observer-members.md)
-  const mainLb = lb.filter(p => !p.is_observer);
-  const obsLb = lb.filter(p => p.is_observer);
-  // Competition ranking: genuinely-tied players share a rank (and medal); the next rank skips
-  // (1, 1, 3). Drives the medal/position display below — see leaderboard-tie-breaks.md.
-  const assignRanks = list => list.forEach((p, i) => {
-    p.rank = (i > 0 && sameRank(list[i - 1], p, tournamentState)) ? list[i - 1].rank : i + 1;
   });
-  assignRanks(mainLb);
-  assignRanks(obsLb);
 
-  // Dinner-split classification applies only to mainLb (see leaderboard-v0-dinner-split.md)
+  // Sort, rank (competition style) and dinner-classify via the shared classifyBoard —
+  // observers live in their own section (see observer-members.md); the dinner split applies
+  // only to mainLb (see leaderboard-v0-dinner-split.md).
+  const { main: mainLb, obs: obsLb } = classifyBoard(lb, tournamentState);
   const N = mainLb.length;
   const T = Math.floor(N / 2);
-  mainLb.forEach((p, i) => { p.dinnerHalf = N >= 2 ? ((i + 1) <= T ? "top" : "bottom") : "neutral"; });
-  // Tied across the cutoff: if rank T and T+1 share (total, exacts), neutralise the tied block
-  if (T >= 1 && N > T) {
-    const a = mainLb[T - 1], b = mainLb[T];
-    if (a.total === b.total && a.exacts === b.exacts) {
-      let lo = T - 1, hi = T;
-      while (lo > 0 && mainLb[lo - 1].total === a.total && mainLb[lo - 1].exacts === a.exacts) lo--;
-      while (hi < N - 1 && mainLb[hi + 1].total === a.total && mainLb[hi + 1].exacts === a.exacts) hi++;
-      for (let i = lo; i <= hi; i++) mainLb[i].dinnerHalf = "neutral";
-    }
-  }
   // Post-group-stage: possible-rank range + locked classification (skip when N < 2 — no meaningful dinner split)
   if (tournamentState.groupStageComplete && N >= 2) {
     // Pairwise, not per-player min/max: everyone scores against ONE actual podium, so two
@@ -1964,6 +2178,11 @@ function renderLeaderboard() {
       a.locked = a.worstRank <= T ? "green" : a.bestRank > T ? "red" : null;
     });
   }
+
+  // Contas — what must still happen to secure 1st / the receiving half (see
+  // specifications/knockout-objective-conditions.md). One shared enumeration; per-row
+  // distillation happens lazily inside playerConditions for expanded rows only.
+  const contas = (tournamentState.groupStageComplete && N >= 2) ? contasData(mainLb) : null;
 
   // Game-day position changes + fun facts (see leaderboard-position-changes-and-fun-facts.md).
   // Frozen to the last completed game day (09:00 Lisbon rollover); shared across viewers.
@@ -1985,6 +2204,8 @@ function renderLeaderboard() {
     const isTop = !isObserver && p.rank <= 3;
     const isExp = state.expanded[p.id];
     const exactMatches = isExp ? played.filter(m => isExact(state.allPreds[p.id]?.[m.id], m)) : [];
+    // Contas: only for expanded, non-observer rows with at least one objective still open
+    const pc = (isExp && !isObserver && contas) ? playerConditions(contas, p.id) : null;
     const showMedal = !isObserver && medals[p.rank - 1];
     const delta = deltaById.get(p.id);
     const arrow = delta == null ? null
@@ -2035,6 +2256,13 @@ function renderLeaderboard() {
             h("span", { style: { fontWeight: 600, color: "rgba(255,255,255,0.7)" } }, teamWithFlag(m.team_b))
           ))
         ),
+        // Contas — what must happen to reach 1st / avoid paying, above the predicted podium.
+        // Each is a single podium-framed sentence (see knockout-objective-conditions.md).
+        pc ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.05)" } },
+          h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(233,185,73,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } }, "🎯 Contas"),
+          ...[pc.first, pc.jantar].filter(Boolean).map(sentence =>
+            h("div", { style: { fontSize: "12px", color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: "4px" } }, sentence))
+        ) : null,
         p.podiumArr.some(t => t) ? h("div", { style: { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid rgba(255,255,255,0.05)" } },
           h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(233,185,73,0.7)", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "0.5px" } },
             p.podiumPts !== null ? `Pódio — ${p.podiumPts} pts` : "Pódio previsto"
