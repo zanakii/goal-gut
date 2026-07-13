@@ -206,7 +206,7 @@ async function poll() {
   console.log(`API requests remaining this minute: ${r.headers.get("x-requests-available-minute") ?? "n/a"}`);
   console.log(`Matches returned: ${upstream.length}`);
 
-  let updated = 0, corrected = 0, resolved = 0, unchanged = 0, unpairedUpstream = 0, unpairedDb = 0, bracketGaps = 0;
+  let updated = 0, corrected = 0, resolved = 0, unchanged = 0, unpairedUpstream = 0, unpairedDb = 0, bracketGaps = 0, bracketFilled = 0;
 
   // ── Upstream -> our rows, paired on fd_match_id ──
   for (const match of upstream) {
@@ -291,16 +291,19 @@ async function poll() {
     }
   }
 
-  // ── Bracket integrity: once a stage is fully decided, every team it produces
-  // (winners → next round; SF losers → 3rd-place match) must fill a slot in the
-  // round it feeds. A null slot here is the Brasil-v-Noruega bug — a pairing that
-  // never got written. The poller can't derive the missing team itself (no bracket
-  // map — it only mirrors upstream), so it warns loudly and names the team by
-  // set-difference so it can be back-filled. Mirrors check-bracket.js.
+  // ── Bracket integrity + unambiguous self-heal: once a stage is fully decided,
+  // every team it produces (winners → next round; SF losers → 3rd-place match) must
+  // fill a slot in the round it feeds. A null slot here is the Brasil-v-Noruega bug —
+  // a pairing upstream decided but never propagated to the fixture. Normally the poller
+  // only mirrors upstream, but when the set-difference is UNAMBIGUOUS — exactly one
+  // produced team unplaced AND exactly one empty slot in the round it feeds — the
+  // assignment is fully determined without a bracket map, so we back-fill it directly.
+  // Anything else (e.g. both SF winners into a still-empty Final: 2 teams, 2 holes,
+  // side undetermined) is left to upstream and only warned. Mirrors check-bracket.js.
   {
     const { data: koRows } = await supabase
       .from("matches")
-      .select("group_letter, team_a, team_b, score_a, score_b, status")
+      .select("id, group_letter, team_a, team_b, score_a, score_b, status")
       .in("group_letter", ["R32", "R16", "QF", "SF", "3P", "FIN"]);
     if (koRows) {
       const winnerOf = (m: any) =>
@@ -332,15 +335,36 @@ async function poll() {
         const present = teamsIn(next);
         const missing = byStage(stage).map(produce).filter((t): t is string => !!t && !present.has(t));
         const holes = nullSlots(next);
-        if (missing.length || holes) {
-          console.warn(`  ⚠ bracket gap: ${stage} complete but ${next} has ${holes} unfilled slot(s); missing: ${missing.join(", ") || "unknown"}`);
-          bracketGaps++;
+        if (!missing.length && !holes) continue;
+
+        // Unambiguous case → self-heal. One missing team + one empty slot means the
+        // team can only go in that slot (side within the row is cosmetic and doesn't
+        // affect scoring, which keys off winner/loser not slot order).
+        if (missing.length === 1 && holes === 1) {
+          const row = byStage(next).find(
+            (m) => !TERMINAL.includes(m.status) && (m.team_a == null || m.team_b == null),
+          );
+          if (row) {
+            const side = row.team_a == null ? "team_a" : "team_b";
+            const { error: fillErr } = await supabase
+              .from("matches")
+              .update({ [side]: missing[0], updated_at: new Date().toISOString() })
+              .eq("id", row.id);
+            if (fillErr) throw new Error(`Supabase back-fill failed (id ${row.id}): ${fillErr.message}`);
+            row[side] = missing[0]; // keep the in-memory snapshot consistent for later feeds
+            console.log(`  ⤷ back-filled ${next} slot: ${missing[0]} (id ${row.id}) [set-diff from ${stage}]`);
+            bracketFilled++;
+            continue;
+          }
         }
+
+        console.warn(`  ⚠ bracket gap: ${stage} complete but ${next} has ${holes} unfilled slot(s); missing: ${missing.join(", ") || "unknown"}`);
+        bracketGaps++;
       }
     }
   }
 
-  const summary = { updated, corrected, resolved, unchanged, unpairedUpstream, unpairedDb, bracketGaps };
+  const summary = { updated, corrected, resolved, unchanged, unpairedUpstream, unpairedDb, bracketGaps, bracketFilled };
   console.log(`Done. ${JSON.stringify(summary)}`);
   return summary;
 }
