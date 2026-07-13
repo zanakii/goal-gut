@@ -1041,10 +1041,24 @@ function buildTeamQuarter() {
   return teamQuarter;
 }
 
+// Semi-final outcome → the two teams guaranteed a final ({winners}) and the two dropped to the
+// 3rd-place match ({losers}). Concrete, not geometric — reads played SF rows. Per-SF: a match is
+// counted the moment it's terminal, so a half's guarantees bite even if the other SF is unplayed.
+function sfOutcome() {
+  const winners = new Set(), losers = new Set();
+  state.matches.filter(m => m.group_letter === 'SF' && isFinal(m)).forEach(m => {
+    const w = matchWinner(m);
+    if (!w) return;
+    winners.add(w);
+    losers.add(w === m.team_a ? m.team_b : m.team_a);
+  });
+  return { winners, losers };
+}
+
 // Bracket-guaranteed pending points for one player's podium picks. Only ALIVE, qualified picks
 // count — an eliminated / non-qualified pick already scores a real 20 in `total`. Never reads or
 // writes ts.eliminated beyond the alive check. Returns { pending: 0|10|20|…, drivers: [[team,…],…] }.
-function podiumFloor(podiumArr, ts, teamQuarter) {
+function podiumFloor(podiumArr, ts, teamQuarter, sf) {
   const byQuarter = {};
   (podiumArr || []).forEach(t => {
     if (!t || ts.eliminated.has(t) || teamQuarter[t] == null) return;
@@ -1052,13 +1066,32 @@ function podiumFloor(podiumArr, ts, teamQuarter) {
   });
   let pending = 0; const drivers = [];
   Object.values(byQuarter).forEach(teams => { if (teams.length > 1) { pending += 20 * (teams.length - 1); drivers.push(teams); } });
-  // Half rule: 1st + 2nd picks alive in the same half but DIFFERENT quarters (same-quarter pairs
-  // are already the +20 above) → the projected-SF loser is 3rd at best, wrong slot either way: +10.
-  // Only the 1st/2nd pair — a 3rd pick sharing a half can still land exactly 3rd for 0.
-  const [p1, p2] = podiumArr || [];
+
+  const [p1, p2, p3] = podiumArr || [];
   const alive = t => t && !ts.eliminated.has(t) ? teamQuarter[t] : null;
+
+  // SF-result-driven floors (concrete, materialise the moment a semi is played — before the
+  // final / 3rd-place decide the actual podium). An SF loser stays OUT of ts.eliminated (it can
+  // still take bronze), so these never collide with the real +20 in `total`; they give way to
+  // real points once the final/3P resolve.
+  const sfWin = sf?.winners || new Set(), sfLose = sf?.losers || new Set();
+  const decided = t => sfWin.has(t) || sfLose.has(t);
+  // Rule A — SF WINNER picked 3rd: a guaranteed finalist (1st or 2nd), so a 3rd pick is a
+  // wrong-slot-on-podium miss either way → locked at exactly +10.
+  if (p3 && !ts.eliminated.has(p3) && sfWin.has(p3)) { pending += 10; drivers.push([p3]); }
+  // Rule B — SF LOSER picked 1st or 2nd: 3rd at best → +10 floor (becomes a real 20 if 4th).
+  [p1, p2].forEach(pk => { if (pk && !ts.eliminated.has(pk) && sfLose.has(pk)) { pending += 10; drivers.push([pk]); } });
+
+  // Geometric half rule (pre-SF projection): 1st + 2nd picks alive in the same half but DIFFERENT
+  // quarters (same-quarter pairs are already the +20 above) → the projected-SF loser is 3rd at
+  // best, wrong slot either way: +10. Only the 1st/2nd pair — a 3rd pick sharing a half can still
+  // land exactly 3rd for 0. SKIP once that SF is decided: same-half 1st/2nd picks that are both
+  // alive are the two SF participants, so Rule B already books the loser's +10 precisely — firing
+  // here too would double-count the same guaranteed +10.
   const q1 = alive(p1), q2 = alive(p2);
-  if (q1 != null && q2 != null && q1 !== q2 && (q1 >> 1) === (q2 >> 1)) { pending += 10; drivers.push([p1, p2]); }
+  if (q1 != null && q2 != null && q1 !== q2 && (q1 >> 1) === (q2 >> 1) && !decided(p1) && !decided(p2)) {
+    pending += 10; drivers.push([p1, p2]);
+  }
   return { pending, drivers };
 }
 
@@ -2137,6 +2170,7 @@ function renderLeaderboard() {
   const progress = state.matches.length > 0 ? (played.length / state.matches.length) * 100 : 0;
   const tournamentState = computeActualTournamentState();
   const teamQuarter = buildTeamQuarter(); // {} until R32 fully seeded → floor inert
+  const sf = sfOutcome(); // SF winners (guaranteed finalists) / losers (3rd at best) → floor drivers
   const lb = state.players.map(p => {
     let total = 0, scored = 0, exacts = 0;
     played.forEach(m => {
@@ -2149,7 +2183,7 @@ function renderLeaderboard() {
     const gamePts = total; // group-game points only, before podium (tie-break criterion 3)
     const podiumPts = calcPodiumPts(podiumArr, tournamentState);
     if (podiumPts !== null) total += podiumPts;
-    const floor = podiumFloor(podiumArr, tournamentState, teamQuarter); // bracket-guaranteed, NOT in total
+    const floor = podiumFloor(podiumArr, tournamentState, teamQuarter, sf); // bracket-guaranteed, NOT in total
     return { ...p, total, scored, exacts, gamePts, podiumArr, podiumPts, floorPending: floor.pending, floorDrivers: floor.drivers };
   });
 
