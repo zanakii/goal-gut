@@ -277,13 +277,26 @@ function calcPodiumPts(podiumArr, tournamentState) {
 }
 
 // ─── STANDINGS ORDERING (single source of truth) ─────────────────────
-// Tie-break ladder (see specifications/tie-break-ladder-reorder.md), each consulted only when
-// everything above is equal:
-//   1. total (golf, lower wins)
-//   2. champion-pick outcome — the 1st-place podium slot, ordered 0 < null < 10 < 20
-//      (right champion → still in play → reached podium → eliminated).
-//   3. group-stage game points (lower wins; frozen once the group stage ends)
-//   4. exacts (more wins)
+// Tie-break ladder (see specifications/tie-break-ladder-reorder.md). Two layers of DIFFERENT depth
+// — this asymmetry is the whole "visual-only sorting within a shared rank" rule: a finer key may
+// decide who is PRINTED above whom, but must NEVER put a player at a higher/lower POSITION (rank
+// number, medal, dinner side).
+//
+//   DISPLAY order (compareStandings), each key consulted only when everything above is equal:
+//     1. total (golf, lower wins)
+//     2. champion-pick outcome — 1st-place podium slot, graded 0 < null < 10 < 20
+//        (right champion → still in play → reached podium → eliminated)
+//     3. group-stage game points (lower wins; frozen once the group stage ends)
+//     4. exacts (more wins) — DISPLAY-ONLY
+//
+//   RANK EQUALITY (sameRank): total, champion BUCKET (right/alive/wrong), group-stage game points.
+//
+// Two keys are display-only and so are excluded from RANK EQUALITY:
+//   • champKey's 10-vs-20 gradation — a lost-the-final pick prints above an out-in-the-R32 pick,
+//     but champBucket collapses them, so both share a rank + medal regardless of how the pick died.
+//   • exacts — more exact scorelines print you higher inside a tie, but exacts is a cosmetic count,
+//     never a golf-scoring criterion, so it NEVER breaks a rank. sameRank omits it by design.
+//
 // Criteria 2–3 are dormant until the group stage ends / the knockouts begin; rows must carry
 // `podiumArr` and `gamePts` for them to bite (missing → inert). Champion needs no phase gate:
 // calcPodiumSlotPts(0, …) is null for everyone until the group stage completes, so criterion 2
@@ -291,11 +304,6 @@ function calcPodiumPts(podiumArr, tournamentState) {
 // biting once knockouts cause eliminations. There is deliberately no "fewer podium points"
 // criterion: since total = gamePts + podiumPts, equal total + equal gamePts already forces equal
 // podiumPts, so it could never decide anything.
-//
-// `champKey` (graded, 0<null<10<20) drives DISPLAY order — a lost-the-final pick (10) is printed
-// above an out-in-the-R32 pick (20). `champBucket` (right/alive/wrong, collapsing 10 & 20 → wrong)
-// drives RANK EQUALITY — both-wrong picks share a rank+medal regardless of how the pick died.
-// The gap between them is the "visual-only sorting within a shared rank" behaviour.
 function champKey(p, ts) {
   const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | 10 | 20 | null
   return slot === 0 ? 0 : slot === null ? 1 : slot === 10 ? 2 : 3;
@@ -308,14 +316,15 @@ function compareStandings(a, b, ts) {
   return a.total - b.total
       || champKey(a, ts) - champKey(b, ts)
       || (a.gamePts ?? a.total) - (b.gamePts ?? b.total)
-      || b.exacts - a.exacts;
+      || b.exacts - a.exacts;                              // display-only — see sameRank
 }
-// True tie = indistinguishable on every criterion → shared rank + shared medal.
+// True tie = indistinguishable on every RANK criterion → shared rank number, medal and dinner
+// side. Exacts is display-only (see ladder above), so it is NOT tested here: two players level on
+// total + champion bucket + group points are TIED even when their exact-score counts differ.
 function sameRank(a, b, ts) {
   return a.total === b.total
       && champBucket(a, ts) === champBucket(b, ts)
-      && (a.gamePts ?? a.total) === (b.gamePts ?? b.total)
-      && a.exacts === b.exacts;
+      && (a.gamePts ?? a.total) === (b.gamePts ?? b.total);
 }
 
 // ─── FLAGS ───────────────────────────────────────────────────────────
@@ -1106,7 +1115,13 @@ function podiumFloor(podiumArr, ts, teamQuarter, sf) {
 // Teams whose quarter is unknown carry no constraint, so the bound stays conservative —
 // it can over-state what's reachable, never under-state it. Final-podium pick score is terminal:
 // 0 exact slot, 10 on-podium wrong slot, 20 off-podium (every non-podium team ends eliminated).
-function minPodiumGap(a, b, teamQuarter, eliminated) {
+//
+// Played SEMIS tighten this further (same knowledge the grey-pill floors use — kept in sync so
+// the range can never contradict a pill): an SF LOSER is 3rd-at-best, so it can only occupy the
+// 3rd slot or fall off-podium — never champion/runner-up; an SF WINNER is a guaranteed finalist,
+// so it must take a champion/runner-up slot — never 3rd, never off-podium.
+function minPodiumGap(a, b, teamQuarter, eliminated, sf) {
+  const sfWin = sf?.winners || new Set(), sfLose = sf?.losers || new Set();
   const relevant = [...new Set([...(a.podiumArr || []), ...(b.podiumArr || [])])]
     .filter(t => t && !eliminated.has(t));
   const slotOf = {};                 // team -> podium slot it's placed in (else off-podium)
@@ -1126,10 +1141,14 @@ function minPodiumGap(a, b, teamQuarter, eliminated) {
       return;
     }
     const team = relevant[i], q = teamQuarter[team];
-    place(i + 1);                                        // leave this team off the podium
+    const isSfWinner = sfWin.has(team), isSfLoser = sfLose.has(team);
+    if (!isSfWinner) place(i + 1);                       // leave off — but an SF winner is a locked finalist
     if (q == null || !usedQuarter.has(q)) {              // or place it — one team per quarter
       for (let s = 0; s < 3; s++) {
         if (usedSlot[s]) continue;
+        // an SF loser is 3rd-at-best (never a finalist); an SF winner is a finalist (never 3rd)
+        if (s < 2 && isSfLoser) continue;
+        if (s === 2 && isSfWinner) continue;
         // champion & runner-up meet in the final, so they come from opposite halves
         if (q != null && s < 2 && halfOfSlot[1 - s] === (q >> 1)) continue;
         usedSlot[s] = true; slotOf[team] = s;
@@ -1226,13 +1245,21 @@ function contasCmp(a, b, ts) {
 // nobody still-alive picked to CONTAS_OUTRO — two triples that differ only in an unpicked slot
 // are one scoring class. Per class, rank the pool by contasCmp and record, per player, whether
 // they finish 1st (shared 1st counts) and whether they pay (bottom half: ≥ T players ahead).
+//
+// Also derives the EXACT possible-rank range (rankRange: id → {best, worst}) as the min/max of
+// each player's competition rank across every reachable class — using the SAME comparator/ties
+// as the live board (compareStandings/sameRank; exacts is display-only, never a rank), so the range matches the
+// rank a player would actually be shown, and can never contradict a Contas condition. This is why
+// it supersedes the pairwise minPodiumGap bound (which optimises each rival independently and so
+// over-states the best edge — it can report a #1 no single podium delivers).
 function enumeratePodiumClasses(rows, engine, eliminated) {
   const k = engine.pending.length, N = rows.length, T = Math.floor(N / 2);
   const allTeams = new Set();
   state.matches.filter(isGroupMatch).forEach(m => { allTeams.add(m.team_a); allTeams.add(m.team_b); });
   const picked = [...new Set(rows.flatMap(r => r.podiumArr).filter(t => t && !eliminated.has(t)))];
   const lbl = t => picked.includes(t) ? t : CONTAS_OUTRO;
-  const sRows = rows.map(r => ({ id: r.id, gamePts: r.gamePts, podiumArr: r.podiumArr, total: 0 }));
+  const sRows = rows.map(r => ({ id: r.id, gamePts: r.gamePts, exacts: r.exacts, podiumArr: r.podiumArr, total: 0 }));
+  const rankRange = new Map(sRows.map(p => [p.id, { best: Infinity, worst: 0 }]));
   const seen = new Set(), classes = [];
   for (let mask = 0; mask < (1 << k); mask++) {
     const out = engine.resolve(n => (mask >> n.bit) & 1);
@@ -1250,9 +1277,18 @@ function enumeratePodiumClasses(rows, engine, eliminated) {
       if (ahead === 0) first.add(p.id);       // nobody strictly ahead → shares 1st
       if (ahead >= T) pays.add(p.id);          // ≥ T players ahead → bottom half → pays
     });
+    // Exact competition rank this class would produce (board comparator, ties share a rank).
+    const ranked = [...sRows].sort((x, y) => compareStandings(x, y, ts));
+    let rk = 1;
+    ranked.forEach((p, i) => {
+      if (i > 0 && !sameRank(ranked[i - 1], p, ts)) rk = i + 1;
+      const rr = rankRange.get(p.id);
+      if (rk < rr.best) rr.best = rk;
+      if (rk > rr.worst) rr.worst = rk;
+    });
     classes.push({ c, r, t, first, pays });
   }
-  return classes;
+  return { classes, rankRange };
 }
 
 // Podium-slot predicates over a relevant team X (X is always a real team, never OUTRO), in
@@ -1316,10 +1352,10 @@ function contasData(rows) {
   let value = null;
   if (engine && engine.pending.length > 0 && engine.pending.length <= CONTAS_MAX_PENDING) {
     const eliminated = computeActualTournamentState().eliminated;
-    const classes = enumeratePodiumClasses(rows, engine, eliminated);
+    const { classes, rankRange } = enumeratePodiumClasses(rows, engine, eliminated);
     const picked = [...new Set(rows.flatMap(r => r.podiumArr).filter(t => t && !eliminated.has(t)))];
     const allChamps = [...new Set(classes.map(c => c.c))];
-    value = { classes, picked, allChamps, conds: new Map() };
+    value = { classes, rankRange, picked, allChamps, conds: new Map() };
   }
   contasMemo = { key, value };
   return value;
@@ -1402,13 +1438,15 @@ function classifyBoard(rows, ts) {
   assignRanks(obs);
   const N = main.length, T = Math.floor(N / 2);
   main.forEach((p, i) => { p.dinnerHalf = N >= 2 ? ((i + 1) <= T ? "top" : "bottom") : "neutral"; });
-  // Tied across the cutoff: if rank T and T+1 share (total, exacts), neutralise the tied block
+  // Tied across the cutoff: if the last eater (rank T) and first payer (rank T+1) are a TRUE tie
+  // (sameRank — exacts excluded, since a cosmetic count can't decide who pays), neutralise the
+  // whole tied block so nobody is split across the dinner line by a non-rank distinction.
   if (T >= 1 && N > T) {
     const a = main[T - 1], b = main[T];
-    if (a.total === b.total && a.exacts === b.exacts) {
+    if (sameRank(a, b, ts)) {
       let lo = T - 1, hi = T;
-      while (lo > 0 && main[lo - 1].total === a.total && main[lo - 1].exacts === a.exacts) lo--;
-      while (hi < N - 1 && main[hi + 1].total === a.total && main[hi + 1].exacts === a.exacts) hi++;
+      while (lo > 0 && sameRank(main[lo - 1], a, ts)) lo--;
+      while (hi < N - 1 && sameRank(main[hi + 1], b, ts)) hi++;
       for (let i = lo; i <= hi; i++) main[i].dinnerHalf = "neutral";
     }
   }
@@ -2193,30 +2231,44 @@ function renderLeaderboard() {
   const { main: mainLb, obs: obsLb } = classifyBoard(lb, tournamentState);
   const N = mainLb.length;
   const T = Math.floor(N / 2);
-  // Post-group-stage: possible-rank range + locked classification (skip when N < 2 — no meaningful dinner split)
-  if (tournamentState.groupStageComplete && N >= 2) {
-    // Pairwise, not per-player min/max: everyone scores against ONE actual podium, so two
-    // players who SHARE a pick can't both get their dream outcome (A needing Argentina as
-    // runner-up for 0 forces B's Argentina-RU to 0 too, not +20). minPodiumGap(a,b) returns
-    // the smallest a.total − b.total over every feasible final podium; a can finish ahead-of
-    // -or-level with b iff that's ≤ 0. See podiumGap helper above.
-    mainLb.forEach(a => {
-      let ahead = 0, behind = 0;
-      mainLb.forEach(b => {
-        if (a.id === b.id) return;
-        if (minPodiumGap(a, b, teamQuarter, tournamentState.eliminated) > 0) ahead++;   // a can never catch b
-        if (minPodiumGap(b, a, teamQuarter, tournamentState.eliminated) > 0) behind++;   // b can never catch a
-      });
-      a.bestRank = 1 + ahead;
-      a.worstRank = N - behind;
-      a.locked = a.worstRank <= T ? "green" : a.bestRank > T ? "red" : null;
-    });
-  }
 
   // Contas — what must still happen to secure 1st / the receiving half (see
   // specifications/knockout-objective-conditions.md). One shared enumeration; per-row
-  // distillation happens lazily inside playerConditions for expanded rows only.
+  // distillation happens lazily inside playerConditions for expanded rows only. Also carries
+  // the EXACT possible-rank range (rankRange), used just below.
   const contas = (tournamentState.groupStageComplete && N >= 2) ? contasData(mainLb) : null;
+  const rankRange = contas?.rankRange;
+  const podiumDecided = tournamentState.champion && tournamentState.runnerUp && tournamentState.third;
+
+  // Post-group-stage: possible-rank range + locked classification (skip when N < 2 — no meaningful dinner split)
+  if (tournamentState.groupStageComplete && N >= 2) {
+    mainLb.forEach(a => {
+      if (podiumDecided) {
+        // Podium fully known → the board rank IS final, nothing left to vary.
+        a.bestRank = a.worstRank = a.rank;
+      } else if (rankRange?.has(a.id)) {
+        // EXACT: min/max of a's competition rank across every reachable final podium (the
+        // buildKoEngine enumeration). Matches the displayed rank and the Contas conditions.
+        const rr = rankRange.get(a.id);
+        a.bestRank = rr.best; a.worstRank = rr.worst;
+      } else {
+        // Fallback while the exact engine is dormant (R32 not fully seeded, or too many pending
+        // completions for an exhaustive sweep): a conservative PAIRWISE bound. minPodiumGap(a,b)
+        // is the smallest a.total − b.total over every feasible podium; a can finish ahead-of-or
+        // -level with b iff that's ≤ 0. It optimises each rival independently, so it can over-
+        // state the best edge — never under-state it. See minPodiumGap header.
+        let ahead = 0, behind = 0;
+        mainLb.forEach(b => {
+          if (a.id === b.id) return;
+          if (minPodiumGap(a, b, teamQuarter, tournamentState.eliminated, sf) > 0) ahead++;   // a can never catch b
+          if (minPodiumGap(b, a, teamQuarter, tournamentState.eliminated, sf) > 0) behind++;   // b can never catch a
+        });
+        a.bestRank = 1 + ahead;
+        a.worstRank = N - behind;
+      }
+      a.locked = a.worstRank <= T ? "green" : a.bestRank > T ? "red" : null;
+    });
+  }
 
   // Game-day position changes + fun facts (see leaderboard-position-changes-and-fun-facts.md).
   // Frozen to the last completed game day (09:00 Lisbon rollover); shared across viewers.
