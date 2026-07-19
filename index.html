@@ -254,16 +254,31 @@ function matchWinner(m) {
 
 function calcPodiumSlotPts(slotIndex, predicted, tournamentState) {
   if (!tournamentState?.groupStageComplete) return null;
-  const { champion, runnerUp, third, eliminated } = tournamentState;
+  const { champion, runnerUp, third, eliminated, finalists } = tournamentState;
   const actual = [champion, runnerUp, third];
   if (!predicted) return 20;
-  if (eliminated.has(predicted)) return 20;
-  if (actual[slotIndex] !== null) {
-    if (predicted === actual[slotIndex]) return 0;
-    if (actual.filter(Boolean).includes(predicted)) return 10;
-    return 20;
+  if (eliminated.has(predicted)) return 20;        // out of the tournament → off the podium
+  if (actual[slotIndex] === predicted) return 0;   // exact slot (only fires once that slot is known)
+
+  // Partial certainty before the final decides the champion/runner-up ORDER: some teams are
+  // already LOCKED onto the podium AND locked out of certain slots, so score them now instead
+  // of waiting for every slot to fill (the bug this replaces returned null / 20 for these).
+  //   • the 3rd-place team can never move up to champion/runner-up → any 1st/2nd pick of it is 10
+  //   • a finalist can never drop to 3rd → any 3rd-slot pick of it is 10
+  if (predicted === third) return 10;              // reached only for slot 0/1 (slot 2 exact → 0 above)
+  if (finalists?.has(predicted)) {
+    if (slotIndex === 2) return 10;                // finalist picked as 3rd → on podium, wrong slot
+    if (actual[slotIndex] !== null) return 10;     // the OTHER finalist owns this slot → wrong slot
+    return null;                                   // final undecided — this top-2 slot is still open
   }
-  return null; // team still in tournament, position unknown — don't score yet
+
+  // Not eliminated and not yet locked onto the podium (e.g. an SF loser awaiting the 3rd-place
+  // match): only score once this slot's outcome is actually settled.
+  if (actual[slotIndex] !== null) {
+    if (actual.filter(Boolean).includes(predicted)) return 10;   // on podium, wrong slot
+    if (champion && runnerUp && third) return 20;                // full podium known → off it
+  }
+  return null; // still ambiguous — don't score yet
 }
 
 function calcPodiumPts(podiumArr, tournamentState) {
@@ -980,9 +995,15 @@ function computeActualTournamentState(asOf = Infinity) {
     if (w) { third = w; eliminated.add(w === thirdMatch.team_a ? thirdMatch.team_b : thirdMatch.team_a); }
   }
 
-  // Final: winner = champion, loser = runner-up (both on the podium, neither eliminated)
+  // Final: winner = champion, loser = runner-up (both on the podium, neither eliminated).
+  // The two finalists are LOCKED onto the top two slots the moment the final's teams are set —
+  // even before it's played — so calcPodiumSlotPts can score "finalist picked as 3rd" (→10)
+  // and "3rd-place team picked as champion/runner-up" (→10) without waiting for the whistle.
   const finalMatch = state.matches.find(m => m.group_letter === 'FIN' && inWindow(m));
+  const finalists = new Set();
   if (finalMatch) {
+    if (finalMatch.team_a) finalists.add(finalMatch.team_a);
+    if (finalMatch.team_b) finalists.add(finalMatch.team_b);
     const w = matchWinner(finalMatch);
     if (w) { champion = w; runnerUp = w === finalMatch.team_a ? finalMatch.team_b : finalMatch.team_a; }
   }
@@ -994,8 +1015,10 @@ function computeActualTournamentState(asOf = Infinity) {
     runnerUp = state.actualPodium.second_place;
     third = third || state.actualPodium.third_place;
   }
+  if (champion) finalists.add(champion);
+  if (runnerUp) finalists.add(runnerUp);
 
-  return { champion, runnerUp, third, eliminated, groupStageComplete: true };
+  return { champion, runnerUp, third, eliminated, finalists, groupStageComplete: true };
 }
 
 // ─── STRUCTURAL PODIUM FLOOR (see specifications/_archive/structural-podium-floor.md) ──
@@ -1068,15 +1091,23 @@ function sfOutcome() {
 // count — an eliminated / non-qualified pick already scores a real 20 in `total`. Never reads or
 // writes ts.eliminated beyond the alive check. Returns { pending: 0|10|20|…, drivers: [[team,…],…] }.
 function podiumFloor(podiumArr, ts, teamQuarter, sf) {
+  const arr = podiumArr || [];
+  // A slot calcPodiumSlotPts already scores (eliminated pick → 20, or a team locked onto the
+  // podium once the SFs/3rd-place decide → 0/10) is REAL points inside `total`. The floor must
+  // only project slots that are still genuinely unbooked (null), or the grey pending pill would
+  // double-count them — e.g. once England is the confirmed 3rd, a 1st/2nd pick of it scores a
+  // real +10 and must NOT also float here as pending.
+  const unbooked = arr.map((t, i) => calcPodiumSlotPts(i, t, ts) === null);
+
   const byQuarter = {};
-  (podiumArr || []).forEach(t => {
-    if (!t || ts.eliminated.has(t) || teamQuarter[t] == null) return;
+  arr.forEach((t, i) => {
+    if (!t || !unbooked[i] || ts.eliminated.has(t) || teamQuarter[t] == null) return;
     (byQuarter[teamQuarter[t]] = byQuarter[teamQuarter[t]] || []).push(t);
   });
   let pending = 0; const drivers = [];
   Object.values(byQuarter).forEach(teams => { if (teams.length > 1) { pending += 20 * (teams.length - 1); drivers.push(teams); } });
 
-  const [p1, p2, p3] = podiumArr || [];
+  const [p1, p2, p3] = arr;
   const alive = t => t && !ts.eliminated.has(t) ? teamQuarter[t] : null;
 
   // SF-result-driven floors (concrete, materialise the moment a semi is played — before the
@@ -1086,10 +1117,13 @@ function podiumFloor(podiumArr, ts, teamQuarter, sf) {
   const sfWin = sf?.winners || new Set(), sfLose = sf?.losers || new Set();
   const decided = t => sfWin.has(t) || sfLose.has(t);
   // Rule A — SF WINNER picked 3rd: a guaranteed finalist (1st or 2nd), so a 3rd pick is a
-  // wrong-slot-on-podium miss either way → locked at exactly +10.
-  if (p3 && !ts.eliminated.has(p3) && sfWin.has(p3)) { pending += 10; drivers.push([p3]); }
+  // wrong-slot-on-podium miss either way → locked at exactly +10. Skipped once unbooked[2] is
+  // false, i.e. once calcPodiumSlotPts books that +10 as real (finalists known post-SF).
+  if (p3 && unbooked[2] && !ts.eliminated.has(p3) && sfWin.has(p3)) { pending += 10; drivers.push([p3]); }
   // Rule B — SF LOSER picked 1st or 2nd: 3rd at best → +10 floor (becomes a real 20 if 4th).
-  [p1, p2].forEach(pk => { if (pk && !ts.eliminated.has(pk) && sfLose.has(pk)) { pending += 10; drivers.push([pk]); } });
+  // Once the 3rd-place match resolves, the loser is either the confirmed 3rd (calcPodiumSlotPts
+  // books its +10) or eliminated (real +20) — unbooked[i] is false in both, so this stops firing.
+  [p1, p2].forEach((pk, i) => { if (pk && unbooked[i] && !ts.eliminated.has(pk) && sfLose.has(pk)) { pending += 10; drivers.push([pk]); } });
 
   // Geometric half rule (pre-SF projection): 1st + 2nd picks alive in the same half but DIFFERENT
   // quarters (same-quarter pairs are already the +20 above) → the projected-SF loser is 3rd at
@@ -1097,7 +1131,7 @@ function podiumFloor(podiumArr, ts, teamQuarter, sf) {
   // land exactly 3rd for 0. SKIP once that SF is decided: same-half 1st/2nd picks that are both
   // alive are the two SF participants, so Rule B already books the loser's +10 precisely — firing
   // here too would double-count the same guaranteed +10.
-  const q1 = alive(p1), q2 = alive(p2);
+  const q1 = unbooked[0] ? alive(p1) : null, q2 = unbooked[1] ? alive(p2) : null;
   if (q1 != null && q2 != null && q1 !== q2 && (q1 >> 1) === (q2 >> 1) && !decided(p1) && !decided(p2)) {
     pending += 10; drivers.push([p1, p2]);
   }
