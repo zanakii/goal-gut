@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
     }
 
     // Pre-reveal: require player_id + pin (own-only visibility)
-    let body: { player_id?: number; pin?: string } = {}
+    let body: { player_id?: string; pin?: string } = {}   // player_id is a UUID string, not a number
     try { body = await req.json() } catch (_) { /* empty body is ok */ }
 
     const { player_id, pin } = body
