@@ -292,53 +292,61 @@ function calcPodiumPts(podiumArr, tournamentState) {
 }
 
 // ─── STANDINGS ORDERING (single source of truth) ─────────────────────
-// Tie-break ladder (see specifications/tie-break-ladder-reorder.md). Two layers of DIFFERENT depth
-// — this asymmetry is the whole "visual-only sorting within a shared rank" rule: a finer key may
-// decide who is PRINTED above whom, but must NEVER put a player at a higher/lower POSITION (rank
-// number, medal, dinner side).
+// Canonical tie-break ladder — see specifications/one-rank-authority-canonical-tiebreak-ladder.md
+// (supersedes tie-break-ladder-reorder.md). ONE rank authority (sameRank) sets every position;
+// everything below the rank line is display order and provably cannot move a player up or down.
 //
-//   DISPLAY order (compareStandings), each key consulted only when everything above is equal:
+//   RANK (sameRank) — the ONLY keys that set position / medal / dinner side. Player-approved:
 //     1. total (golf, lower wins)
-//     2. champion-pick outcome — 1st-place podium slot, graded 0 < null < 10 < 20
-//        (right champion → still in play → reached podium → eliminated)
+//     2. correct champion pick — 2-WAY: called the actual champion or not (alive & dead both "not")
 //     3. group-stage game points (lower wins; frozen once the group stage ends)
-//     4. exacts (more wins) — DISPLAY-ONLY
 //
-//   RANK EQUALITY (sameRank): total, champion BUCKET (right/alive/wrong), group-stage game points.
+//   DISPLAY (compareStandings) — keys 1–3 above, then, purely to order print WITHIN a shared rank:
+//     4. champion still alive beats already dead (alive < lost-final 10 < out-early 20)
+//     5. less remaining podium exposure (a locked pick prints above a tied one that can still worsen)
+//     6. exacts (more wins) — cosmetic count
+//     7. alphabetical (stable final ordering)
 //
-// Two keys are display-only and so are excluded from RANK EQUALITY:
-//   • champKey's 10-vs-20 gradation — a lost-the-final pick prints above an out-in-the-R32 pick,
-//     but champBucket collapses them, so both share a rank + medal regardless of how the pick died.
-//   • exacts — more exact scorelines print you higher inside a tie, but exacts is a cosmetic count,
-//     never a golf-scoring criterion, so it NEVER breaks a rank. sameRank omits it by design.
-//
-// Criteria 2–3 are dormant until the group stage ends / the knockouts begin; rows must carry
-// `podiumArr` and `gamePts` for them to bite (missing → inert). Champion needs no phase gate:
-// calcPodiumSlotPts(0, …) is null for everyone until the group stage completes, so criterion 2
-// is naturally inert during the group stage (ladder collapses to total → exacts) and starts
-// biting once knockouts cause eliminations. There is deliberately no "fewer podium points"
-// criterion: since total = gamePts + podiumPts, equal total + equal gamePts already forces equal
-// podiumPts, so it could never decide anything.
-function champKey(p, ts) {
-  const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | 10 | 20 | null
-  return slot === 0 ? 0 : slot === null ? 1 : slot === 10 ? 2 : 3;
+// Why key 2 is 2-way (reverses tie-break-ladder-reorder.md's 3-way right/alive/wrong): only the two
+// criteria the players voted — correct champion, group points — may break a POSITION. Alive-beats-
+// dead was never approved, so it drops to display-only (key 4). Consequence: mid-tournament, players
+// level on total + gamePts share a rank + dinner side regardless of whether their champion is alive
+// or already out. Key 2 needs no phase gate: calcPodiumSlotPts(0,…) is null for everyone until the
+// group stage completes AND no one is "right" until the cup is lifted, so it is naturally inert
+// through the group stage and starts biting only once a champion is crowned. There is deliberately
+// no "fewer podium points" rank key: total = gamePts + podiumPts, so equal total + equal gamePts
+// already forces equal podiumPts — it could never decide anything.
+function correctChamp(p, ts) {
+  // RANK key 2 — champion called (0) or not (1). alive & dead both "not".
+  return calcPodiumSlotPts(0, p.podiumArr?.[0], ts) === 0 ? 0 : 1;
 }
-function champBucket(p, ts) {
-  const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | 10 | 20 | null
-  return slot === 0 ? "right" : slot === null ? "alive" : "wrong"; // 10 & 20 → "wrong"
+function champDeadness(p, ts) {
+  // DISPLAY key 4 — among "not-correct", alive prints above lost-final above out-early.
+  const slot = calcPodiumSlotPts(0, p.podiumArr?.[0], ts); // 0 | null | 10 | 20
+  return slot === null ? 0 : slot === 10 ? 1 : slot === 20 ? 2 : 0; // right(0) never reaches here
+}
+function podiumExposure(p, ts) {
+  // DISPLAY key 5 — worst-case podium points still gettable: every unresolved slot could end +20.
+  // Fewer open slots ⇒ safer ⇒ prints higher. Display-only, so the loose 20/slot bound is fine
+  // (it ignores geometry that may cap a slot at 10 — see structural-podium-floor.md).
+  return [0, 1, 2].reduce((n, i) =>
+    n + (calcPodiumSlotPts(i, p.podiumArr?.[i], ts) === null ? 20 : 0), 0);
 }
 function compareStandings(a, b, ts) {
-  return a.total - b.total
-      || champKey(a, ts) - champKey(b, ts)
-      || (a.gamePts ?? a.total) - (b.gamePts ?? b.total)
-      || b.exacts - a.exacts;                              // display-only — see sameRank
+  return a.total - b.total                                    // 1  golf total            [RANK]
+      || correctChamp(a, ts) - correctChamp(b, ts)            // 2  champion right vs not  [RANK]
+      || (a.gamePts ?? a.total) - (b.gamePts ?? b.total)      // 3  group-stage points     [RANK]
+      || champDeadness(a, ts) - champDeadness(b, ts)          // 4  alive < lost-final < out
+      || podiumExposure(a, ts) - podiumExposure(b, ts)        // 5  less remaining exposure
+      || b.exacts - a.exacts                                  // 6  more exacts
+      || (a.name ?? "").localeCompare(b.name ?? "", "pt");    // 7  alphabetical (stable)
 }
-// True tie = indistinguishable on every RANK criterion → shared rank number, medal and dinner
-// side. Exacts is display-only (see ladder above), so it is NOT tested here: two players level on
-// total + champion bucket + group points are TIED even when their exact-score counts differ.
+// True tie = equal on the three RANK keys → shared rank number, medal and dinner side. Keys 4–7 are
+// display-only (see ladder above) and are NOT tested here: two players level on total + correct-
+// champion + group points are TIED however their champion pick died, whatever their exacts.
 function sameRank(a, b, ts) {
   return a.total === b.total
-      && champBucket(a, ts) === champBucket(b, ts)
+      && correctChamp(a, ts) === correctChamp(b, ts)
       && (a.gamePts ?? a.total) === (b.gamePts ?? b.total);
 }
 
@@ -597,9 +605,12 @@ function buildPodiumBarChart(canvasId, instanceKey) {
   const minTotal = Math.min(...players.map(p => p.total));
   const yMin = Math.max(0, minTotal - 10);
 
-  // Dinner-cutoff band: shade from the first paying player (rank T+1) upward, non-observers only.
-  const compTotals = players.filter(p => !p.is_observer).map(p => p.total).sort((a, b) => a - b);
-  const cutoff = compTotals.length >= 2 ? compTotals[Math.floor(compTotals.length / 2)] : null;
+  // Dinner-cutoff band: shade the board's ACTUAL paying set, not a raw median total, so the band
+  // can never contradict the leaderboard's dinner split (classifyBoard applies the cutoff-tie
+  // neutralisation; a neutralised player is not "bottom", so the band starts above them). Cutoff =
+  // the lowest total among players the board marks as paying. See one-rank-authority spec.
+  const payers = classifyBoard(players, ts).main.filter(p => p.dinnerHalf === "bottom");
+  const cutoff = payers.length ? Math.min(...payers.map(p => p.total)) : null;
   const cutoffBand = {
     id: "cutoffBand",
     beforeDatasetsDraw(chart) {
@@ -1268,10 +1279,13 @@ function buildKoEngine() {
   return { nodes, pending, resolve };
 }
 
-// The real tie-break, exact scores EXCLUDED (see header): total → champion pick → group points.
+// The rank comparator's strict prefix — the SAME keys as sameRank (total → correct champion →
+// group points), so "ahead" here can never disagree with the board's rank/dinner. Two equal-rank
+// players are never ahead of each other, which reproduces classifyBoard's cutoff-tie neutralisation
+// for the pays/first logic below without any extra handling.
 function contasCmp(a, b, ts) {
   return (a.total - b.total)
-      || (champKey(a, ts) - champKey(b, ts))
+      || (correctChamp(a, ts) - correctChamp(b, ts))
       || ((a.gamePts ?? a.total) - (b.gamePts ?? b.total));
 }
 
@@ -1292,7 +1306,9 @@ function enumeratePodiumClasses(rows, engine, eliminated) {
   state.matches.filter(isGroupMatch).forEach(m => { allTeams.add(m.team_a); allTeams.add(m.team_b); });
   const picked = [...new Set(rows.flatMap(r => r.podiumArr).filter(t => t && !eliminated.has(t)))];
   const lbl = t => picked.includes(t) ? t : CONTAS_OUTRO;
-  const sRows = rows.map(r => ({ id: r.id, gamePts: r.gamePts, exacts: r.exacts, podiumArr: r.podiumArr, total: 0 }));
+  // `name` carried so compareStandings' alphabetical key (7) doesn't localeCompare undefined; it
+  // orders only WITHIN a shared rank, so it never affects the rankRange this function computes.
+  const sRows = rows.map(r => ({ id: r.id, name: r.name, gamePts: r.gamePts, exacts: r.exacts, podiumArr: r.podiumArr, total: 0 }));
   const rankRange = new Map(sRows.map(p => [p.id, { best: Infinity, worst: 0 }]));
   const seen = new Set(), classes = [];
   for (let mask = 0; mask < (1 << k); mask++) {
