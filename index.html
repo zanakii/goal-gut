@@ -163,22 +163,111 @@
 const SUPABASE_URL = "https://thjvoocszfzqkyatkevv.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoanZvb2NzemZ6cWt5YXRrZXZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MjUxNjgsImV4cCI6MjA5MTMwMTE2OH0.ZcddMnsMF9cejXx3zuWNVqd4F8bMxgdIRHLSJsC7aUs";
 
-// ─── TOURNAMENT CONFIG (fork manifest) ───────────────────────────────
-// Everything that is edition- or format-specific lives at the symbols named below. To stand up a
-// new edition, edit ONLY these — the scoring/bracket/ranking engines are format-invariant. See the
-// step-by-step runbooks in porting/ (WC-reseed-runbook.md for another World Cup, EURO-fork-runbook.md
-// for a Euro). Symbols, not line numbers, so this manifest can't go stale:
-//
-//   • GROUP_MATCH_COUNT   — group-stage match count (below). Also implies the group letters (A–L).
-//   • FLAGS               — team → flag emoji map (participating nations).
-//   • R32 / R16 / QF / SF / BRACKET_STRUCTURE — the static knockout tree (FIFA 48-team format).
-//   • PODIUM_QUARTERS     — R32-slot → bracket-quarter map (structural-podium-floor geometry).
-//   • THIRD_SLOT_GROUPS   — which groups' 3rd-placed teams can fill each R32 "best 3rd" slot.
-//   • isGroupMatch        — the A–L vs knockout-stage-code discriminator (group_letter shape).
-//
-// FIFA-format invariants (do NOT touch for another World Cup — only for a Euro fork): the bracket
-// tree, PODIUM_QUARTERS, THIRD_SLOT_GROUPS, GROUP_MATCH_COUNT (72), and the 16-slot R32 (= R32.length).
-const GROUP_MATCH_COUNT = 72;   // 12 groups × 6 matches; the "group stage complete" threshold
+// ═══ TOURNAMENT CONFIG — the ONLY block a new edition edits ═══════════════════════════════════
+// Everything edition- or format-specific lives here. The scoring / bracket-resolution / ranking
+// engines further down are format-invariant — leave them alone. Step-by-step runbooks in porting/
+// (WC-reseed-runbook.md for another World Cup; EURO-fork-runbook.md for a Euro). The one variant that
+// isn't a constant is isGroupMatch (the A–L vs knockout-stage-code discriminator) — it stays a helper
+// beside the other match predicates. FIFA-format invariants (change ONLY for a Euro fork, never for
+// another World Cup): the bracket tree, PODIUM_QUARTERS, THIRD_SLOT_GROUPS, GROUP_MATCH_COUNT (72),
+// and the 16-slot R32 (referenced everywhere as R32.length, never a bare 16).
+
+// Group-stage match count — 12 groups × 6 = 72; the "group stage complete" threshold. Implies A–L.
+const GROUP_MATCH_COUNT = 72;
+
+// Team → flag emoji (participating nations). flagOf / teamWithFlag helpers live in the FLAGS section.
+const FLAGS = {
+  'Brasil':'🇧🇷','Argentina':'🇦🇷','Colômbia':'🇨🇴','Uruguai':'🇺🇾','Equador':'🇪🇨',
+  'Paraguai':'🇵🇾','Venezuela':'🇻🇪','Peru':'🇵🇪','Chile':'🇨🇱','Bolívia':'🇧🇴',
+  'EUA':'🇺🇸','México':'🇲🇽','Canadá':'🇨🇦','Panamá':'🇵🇦','Costa Rica':'🇨🇷',
+  'Honduras':'🇭🇳','Jamaica':'🇯🇲','Haiti':'🇭🇹','El Salvador':'🇸🇻','Curaçau':'🇨🇼',
+  'Alemanha':'🇩🇪','Espanha':'🇪🇸','França':'🇫🇷','Inglaterra':'🏴󠁧󠁢󠁥󠁮󠁧󠁿',
+  'Portugal':'🇵🇹','Países Baixos':'🇳🇱','Bélgica':'🇧🇪','Itália':'🇮🇹',
+  'Croácia':'🇭🇷','Áustria':'🇦🇹','Suíça':'🇨🇭','Dinamarca':'🇩🇰',
+  'Polónia':'🇵🇱','Escócia':'🏴󠁧󠁢󠁳󠁣󠁴󠁿','Turquia':'🇹🇷','Sérvia':'🇷🇸',
+  'Noruega':'🇳🇴','Suécia':'🇸🇪','Rep. Checa':'🇨🇿','Hungria':'🇭🇺',
+  'Eslováquia':'🇸🇰','Eslovénia':'🇸🇮','Albânia':'🇦🇱','Grécia':'🇬🇷',
+  'Roménia':'🇷🇴','Ucrânia':'🇺🇦','Geórgia':'🇬🇪','Islândia':'🇮🇸',
+  'Bósnia-Herzegovina':'🇧🇦','País de Gales':'🏴󠁧󠁢󠁷󠁬󠁳󠁿','Finlândia':'🇫🇮','Irlanda':'🇮🇪',
+  'Japão':'🇯🇵','Coreia do Sul':'🇰🇷','Austrália':'🇦🇺','Irão':'🇮🇷',
+  'Arábia Saudita':'🇸🇦','Qatar':'🇶🇦','Uzbequistão':'🇺🇿','Iraque':'🇮🇶',
+  'Jordânia':'🇯🇴','China':'🇨🇳','Indonésia':'🇮🇩','Palestina':'🇵🇸',
+  'Marrocos':'🇲🇦','Senegal':'🇸🇳','Egito':'🇪🇬','Nigéria':'🇳🇬',
+  'Argélia':'🇩🇿','África do Sul':'🇿🇦','Gana':'🇬🇭','Costa do Marfim':'🇨🇮',
+  'Cabo Verde':'🇨🇻','RD Congo':'🇨🇩','Camarões':'🇨🇲','Mali':'🇲🇱',
+  'Tunísia':'🇹🇳','Angola':'🇦🇴','Guiné':'🇬🇳','Zâmbia':'🇿🇲',
+  'Comores':'🇰🇲','Ruanda':'🇷🇼','Namíbia':'🇳🇦','Burquina Faso':'🇧🇫',
+  'Benin':'🇧🇯','Mauritânia':'🇲🇷','Guiné-Bissau':'🇬🇼','Togo':'🇹🇬',
+  'Etiópia':'🇪🇹','Moçambique':'🇲🇿','Nova Zelândia':'🇳🇿','Fiji':'🇫🇯',
+};
+
+// Static knockout bracket — FIFA WC2026, fixed structure, no redraw. R32 matchups from official FIFA
+// regulations; R16/QF/SF chain by slot; BRACKET_STRUCTURE binds the rounds for the bracket UI. The
+// resolution/rendering logic that consumes this tree lives in the BRACKET section further down.
+const R32 = [
+  { slot:0,  a:{type:'runnerup',group:'A'}, b:{type:'runnerup',group:'B'} },
+  { slot:1,  a:{type:'winner', group:'E'}, b:{type:'third',groups:['A','B','C','D','F']} },
+  { slot:2,  a:{type:'winner', group:'F'}, b:{type:'runnerup',group:'C'} },
+  { slot:3,  a:{type:'winner', group:'C'}, b:{type:'runnerup',group:'F'} },
+  { slot:4,  a:{type:'winner', group:'I'}, b:{type:'third',groups:['C','D','F','G','H']} },
+  { slot:5,  a:{type:'runnerup',group:'E'}, b:{type:'runnerup',group:'I'} },
+  { slot:6,  a:{type:'winner', group:'A'}, b:{type:'third',groups:['C','E','F','H','I']} },
+  { slot:7,  a:{type:'winner', group:'L'}, b:{type:'third',groups:['E','H','I','J','K']} },
+  { slot:8,  a:{type:'winner', group:'D'}, b:{type:'third',groups:['B','E','F','I','J']} },
+  { slot:9,  a:{type:'winner', group:'G'}, b:{type:'third',groups:['A','E','H','I','J']} },
+  { slot:10, a:{type:'runnerup',group:'K'}, b:{type:'runnerup',group:'L'} },
+  { slot:11, a:{type:'winner', group:'H'}, b:{type:'runnerup',group:'J'} },
+  { slot:12, a:{type:'winner', group:'B'}, b:{type:'third',groups:['E','F','G','I','J']} },
+  { slot:13, a:{type:'winner', group:'J'}, b:{type:'runnerup',group:'H'} },
+  { slot:14, a:{type:'winner', group:'K'}, b:{type:'third',groups:['D','E','I','J','L']} },
+  { slot:15, a:{type:'runnerup',group:'D'}, b:{type:'runnerup',group:'G'} },
+];
+const R16 = [
+  { slot:0, a:{from:'r32',slot:1},  b:{from:'r32',slot:4}  },
+  { slot:1, a:{from:'r32',slot:0},  b:{from:'r32',slot:2}  },
+  { slot:2, a:{from:'r32',slot:3},  b:{from:'r32',slot:5}  },
+  { slot:3, a:{from:'r32',slot:6},  b:{from:'r32',slot:7}  },
+  { slot:4, a:{from:'r32',slot:10}, b:{from:'r32',slot:11} },
+  { slot:5, a:{from:'r32',slot:8},  b:{from:'r32',slot:9}  },
+  { slot:6, a:{from:'r32',slot:13}, b:{from:'r32',slot:15} },
+  { slot:7, a:{from:'r32',slot:12}, b:{from:'r32',slot:14} },
+];
+const QF = [
+  { slot:0, a:{from:'r16',slot:0}, b:{from:'r16',slot:1} },
+  { slot:1, a:{from:'r16',slot:4}, b:{from:'r16',slot:5} },
+  { slot:2, a:{from:'r16',slot:2}, b:{from:'r16',slot:3} },
+  { slot:3, a:{from:'r16',slot:6}, b:{from:'r16',slot:7} },
+];
+const SF = [
+  { slot:0, a:{from:'qf',slot:0}, b:{from:'qf',slot:1} },
+  { slot:1, a:{from:'qf',slot:2}, b:{from:'qf',slot:3} },
+];
+const BRACKET_STRUCTURE = [
+  { id:'r32',   label:'Ronda de 32',      matches: R32   },
+  { id:'r16',   label:'Oitavos de Final', matches: R16   },
+  { id:'qf',    label:'Quartos de Final', matches: QF    },
+  { id:'sf',    label:'Meias-Final',      matches: SF    },
+  { id:'third', label:'3º Lugar',         matches: [{ slot:0, a:{from:'sf',slot:0,loser:true}, b:{from:'sf',slot:1,loser:true} }] },
+  { id:'final', label:'Final',            matches: [{ slot:0, a:{from:'sf',slot:0}, b:{from:'sf',slot:1} }] },
+];
+
+// Quarter membership by R32 slot — read straight off the static bracket tree above (structural-
+// podium-floor geometry; see specifications/_archive/structural-podium-floor.md). The slotQuarter
+// helper and the rest of the floor logic live in the STRUCTURAL PODIUM FLOOR section below.
+const PODIUM_QUARTERS = [[0, 1, 2, 4], [8, 9, 10, 11], [3, 5, 6, 7], [12, 13, 14, 15]]; // QF0..QF3
+
+// Which groups' 3rd-placed teams can fill each R32 "best 3rd" slot (FIFA's fixed assignment table).
+const THIRD_SLOT_GROUPS = {
+  1:  ['A','B','C','D','F'],
+  4:  ['C','D','F','G','H'],
+  6:  ['C','E','F','H','I'],
+  7:  ['E','H','I','J','K'],
+  8:  ['B','E','F','I','J'],
+  9:  ['A','E','H','I','J'],
+  12: ['E','F','G','I','J'],
+  14: ['D','E','I','J','L']
+};
+// ═════════════════════════════════════════════════════════════════════════════════════════════
 
 async function sbGet(table, params = "") {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
@@ -367,31 +456,7 @@ function sameRank(a, b, ts) {
       && (a.gamePts ?? a.total) === (b.gamePts ?? b.total);
 }
 
-// ─── FLAGS ───────────────────────────────────────────────────────────
-const FLAGS = {
-  'Brasil':'🇧🇷','Argentina':'🇦🇷','Colômbia':'🇨🇴','Uruguai':'🇺🇾','Equador':'🇪🇨',
-  'Paraguai':'🇵🇾','Venezuela':'🇻🇪','Peru':'🇵🇪','Chile':'🇨🇱','Bolívia':'🇧🇴',
-  'EUA':'🇺🇸','México':'🇲🇽','Canadá':'🇨🇦','Panamá':'🇵🇦','Costa Rica':'🇨🇷',
-  'Honduras':'🇭🇳','Jamaica':'🇯🇲','Haiti':'🇭🇹','El Salvador':'🇸🇻','Curaçau':'🇨🇼',
-  'Alemanha':'🇩🇪','Espanha':'🇪🇸','França':'🇫🇷','Inglaterra':'🏴󠁧󠁢󠁥󠁮󠁧󠁿',
-  'Portugal':'🇵🇹','Países Baixos':'🇳🇱','Bélgica':'🇧🇪','Itália':'🇮🇹',
-  'Croácia':'🇭🇷','Áustria':'🇦🇹','Suíça':'🇨🇭','Dinamarca':'🇩🇰',
-  'Polónia':'🇵🇱','Escócia':'🏴󠁧󠁢󠁳󠁣󠁴󠁿','Turquia':'🇹🇷','Sérvia':'🇷🇸',
-  'Noruega':'🇳🇴','Suécia':'🇸🇪','Rep. Checa':'🇨🇿','Hungria':'🇭🇺',
-  'Eslováquia':'🇸🇰','Eslovénia':'🇸🇮','Albânia':'🇦🇱','Grécia':'🇬🇷',
-  'Roménia':'🇷🇴','Ucrânia':'🇺🇦','Geórgia':'🇬🇪','Islândia':'🇮🇸',
-  'Bósnia-Herzegovina':'🇧🇦','País de Gales':'🏴󠁧󠁢󠁷󠁬󠁳󠁿','Finlândia':'🇫🇮','Irlanda':'🇮🇪',
-  'Japão':'🇯🇵','Coreia do Sul':'🇰🇷','Austrália':'🇦🇺','Irão':'🇮🇷',
-  'Arábia Saudita':'🇸🇦','Qatar':'🇶🇦','Uzbequistão':'🇺🇿','Iraque':'🇮🇶',
-  'Jordânia':'🇯🇴','China':'🇨🇳','Indonésia':'🇮🇩','Palestina':'🇵🇸',
-  'Marrocos':'🇲🇦','Senegal':'🇸🇳','Egito':'🇪🇬','Nigéria':'🇳🇬',
-  'Argélia':'🇩🇿','África do Sul':'🇿🇦','Gana':'🇬🇭','Costa do Marfim':'🇨🇮',
-  'Cabo Verde':'🇨🇻','RD Congo':'🇨🇩','Camarões':'🇨🇲','Mali':'🇲🇱',
-  'Tunísia':'🇹🇳','Angola':'🇦🇴','Guiné':'🇬🇳','Zâmbia':'🇿🇲',
-  'Comores':'🇰🇲','Ruanda':'🇷🇼','Namíbia':'🇳🇦','Burquina Faso':'🇧🇫',
-  'Benin':'🇧🇯','Mauritânia':'🇲🇷','Guiné-Bissau':'🇬🇼','Togo':'🇹🇬',
-  'Etiópia':'🇪🇹','Moçambique':'🇲🇿','Nova Zelândia':'🇳🇿','Fiji':'🇫🇯',
-};
+// ─── FLAGS (the FLAGS map itself lives in TOURNAMENT CONFIG at the top) ───
 function flagOf(team) { return FLAGS[team] || ''; }
 function teamWithFlag(team) { const f = flagOf(team); return (team && f) ? `${f} ${team}` : (team || ''); }
 
@@ -904,55 +969,7 @@ async function submitPredictions() {
   });
 }
 
-// ─── BRACKET ─────────────────────────────────────────────────────────
-// FIFA WC2026 knockout bracket — fixed structure, no redraw
-// R32 matchups sourced from official FIFA competition regulations
-const R32 = [
-  { slot:0,  a:{type:'runnerup',group:'A'}, b:{type:'runnerup',group:'B'} },
-  { slot:1,  a:{type:'winner', group:'E'}, b:{type:'third',groups:['A','B','C','D','F']} },
-  { slot:2,  a:{type:'winner', group:'F'}, b:{type:'runnerup',group:'C'} },
-  { slot:3,  a:{type:'winner', group:'C'}, b:{type:'runnerup',group:'F'} },
-  { slot:4,  a:{type:'winner', group:'I'}, b:{type:'third',groups:['C','D','F','G','H']} },
-  { slot:5,  a:{type:'runnerup',group:'E'}, b:{type:'runnerup',group:'I'} },
-  { slot:6,  a:{type:'winner', group:'A'}, b:{type:'third',groups:['C','E','F','H','I']} },
-  { slot:7,  a:{type:'winner', group:'L'}, b:{type:'third',groups:['E','H','I','J','K']} },
-  { slot:8,  a:{type:'winner', group:'D'}, b:{type:'third',groups:['B','E','F','I','J']} },
-  { slot:9,  a:{type:'winner', group:'G'}, b:{type:'third',groups:['A','E','H','I','J']} },
-  { slot:10, a:{type:'runnerup',group:'K'}, b:{type:'runnerup',group:'L'} },
-  { slot:11, a:{type:'winner', group:'H'}, b:{type:'runnerup',group:'J'} },
-  { slot:12, a:{type:'winner', group:'B'}, b:{type:'third',groups:['E','F','G','I','J']} },
-  { slot:13, a:{type:'winner', group:'J'}, b:{type:'runnerup',group:'H'} },
-  { slot:14, a:{type:'winner', group:'K'}, b:{type:'third',groups:['D','E','I','J','L']} },
-  { slot:15, a:{type:'runnerup',group:'D'}, b:{type:'runnerup',group:'G'} },
-];
-const R16 = [
-  { slot:0, a:{from:'r32',slot:1},  b:{from:'r32',slot:4}  },
-  { slot:1, a:{from:'r32',slot:0},  b:{from:'r32',slot:2}  },
-  { slot:2, a:{from:'r32',slot:3},  b:{from:'r32',slot:5}  },
-  { slot:3, a:{from:'r32',slot:6},  b:{from:'r32',slot:7}  },
-  { slot:4, a:{from:'r32',slot:10}, b:{from:'r32',slot:11} },
-  { slot:5, a:{from:'r32',slot:8},  b:{from:'r32',slot:9}  },
-  { slot:6, a:{from:'r32',slot:13}, b:{from:'r32',slot:15} },
-  { slot:7, a:{from:'r32',slot:12}, b:{from:'r32',slot:14} },
-];
-const QF = [
-  { slot:0, a:{from:'r16',slot:0}, b:{from:'r16',slot:1} },
-  { slot:1, a:{from:'r16',slot:4}, b:{from:'r16',slot:5} },
-  { slot:2, a:{from:'r16',slot:2}, b:{from:'r16',slot:3} },
-  { slot:3, a:{from:'r16',slot:6}, b:{from:'r16',slot:7} },
-];
-const SF = [
-  { slot:0, a:{from:'qf',slot:0}, b:{from:'qf',slot:1} },
-  { slot:1, a:{from:'qf',slot:2}, b:{from:'qf',slot:3} },
-];
-const BRACKET_STRUCTURE = [
-  { id:'r32',   label:'Ronda de 32',      matches: R32   },
-  { id:'r16',   label:'Oitavos de Final', matches: R16   },
-  { id:'qf',    label:'Quartos de Final', matches: QF    },
-  { id:'sf',    label:'Meias-Final',      matches: SF    },
-  { id:'third', label:'3º Lugar',         matches: [{ slot:0, a:{from:'sf',slot:0,loser:true}, b:{from:'sf',slot:1,loser:true} }] },
-  { id:'final', label:'Final',            matches: [{ slot:0, a:{from:'sf',slot:0}, b:{from:'sf',slot:1} }] },
-];
+// ─── BRACKET (the tree R32/R16/QF/SF/BRACKET_STRUCTURE lives in TOURNAMENT CONFIG at the top) ───
 
 // Unified standings computation — getScore(m) returns { sa, sb } (null sa = skip)
 function computeStandings(matches, getScore) {
@@ -1059,8 +1076,7 @@ function computeActualTournamentState(asOf = Infinity) {
 // stays results-driven. Materialises into real points the normal way (via `eliminated`) when a
 // colliding team actually loses. Dormant until groupStageComplete + a fully seeded R32 (16 rows).
 
-// Quarter membership by R32 slot — read straight off the static bracket tree (R32/R16/QF above).
-const PODIUM_QUARTERS = [[0, 1, 2, 4], [8, 9, 10, 11], [3, 5, 6, 7], [12, 13, 14, 15]]; // QF0..QF3
+// slotQuarter reads PODIUM_QUARTERS (R32 slot → bracket quarter), which lives in TOURNAMENT CONFIG at the top.
 function slotQuarter(slot) { return PODIUM_QUARTERS.findIndex(q => q.includes(slot)); }
 
 // R32 tree slot → seeded DB row. Pins each row to its static-bracket slot via the side
@@ -1639,17 +1655,7 @@ function computeBest3rds(standings) {
     .slice(0, 8);
 }
 
-const THIRD_SLOT_GROUPS = {
-  1:  ['A','B','C','D','F'],
-  4:  ['C','D','F','G','H'],
-  6:  ['C','E','F','H','I'],
-  7:  ['E','H','I','J','K'],
-  8:  ['B','E','F','I','J'],
-  9:  ['A','E','H','I','J'],
-  12: ['E','F','G','I','J'],
-  14: ['D','E','I','J','L']
-};
-
+// THIRD_SLOT_GROUPS (R32 best-3rd slot → eligible groups) lives in TOURNAMENT CONFIG at the top.
 function assignBest3rdsToSlots(best3rds) {
   const slots = Object.keys(THIRD_SLOT_GROUPS)
     .map(Number)
