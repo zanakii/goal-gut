@@ -16,9 +16,11 @@ Before claiming any work is pending, in-flight, or unresolved based on a memory 
 
 ## Project
 
-**Goal Gut** — a private World Cup 2026 predictions pool for a closed group of friends, live at [goalgut.gg](https://goalgut.gg). Group stage starts June 2026, final July 19. Scoring is golf-style — lower = better, exact = 0.
+**Goal Gut** — a private World Cup 2026 predictions pool for a closed group of friends, live at [goalgut.gg](https://goalgut.gg). Scoring is golf-style — lower = better, exact = 0. **The WC2026 edition is complete** (group stage June 2026, final 2026-07-19 — Espanha champion, Pedro Miguel won the pool); the code is now in a port-ready state for the next edition.
 
 This is the **v0** edition — deliberately simple, single-pool. Do not refactor toward a framework or introduce auth libraries; the **public edition** is a separate rebuild in a sibling `goalgut/` repo.
+
+**Forking to the next edition (start here).** Everything edition- or format-specific lives in ONE `TOURNAMENT CONFIG` block at the top of `index.html` — `FLAGS`, the bracket tree (`R32`/`R16`/`QF`/`SF`/`BRACKET_STRUCTURE`), `PODIUM_QUARTERS`, `THIRD_SLOT_GROUPS`, `GROUP_MATCH_COUNT` (`isGroupMatch` is the one variant that stays a helper). Step-by-step runbooks live in `porting/`: `WC-reseed-runbook.md` (another World Cup — re-point data, never structure) and `EURO-fork-runbook.md` (Euro: 24-team, 6-group, no third-place match — a product decision gates the podium rewrite). The scoring / bracket-resolution / ranking engines are **format-invariant — do not touch them to fork.**
 
 ## Stack & infra
 
@@ -38,6 +40,7 @@ Edge Function secrets (Dashboard → Edge Functions → Secrets): `FOOTBALL_DATA
 - **Knockout stage codes live in `matches.group_letter`** (widened to `text`): `R32 R16 QF SF 3P FIN`. Group rows are single letters `A–L`; the Final is **`FIN`, never `F`** (`F` is Group F). Use the `isGroupMatch(m)` helper (tests `/^[A-L]$/`) — never `group_letter.length`.
 - **Bracket picks (`bracket_predictions`) do not score independently.** The knockout bracket is a UX device for drafting the path to the 1-2-3 podium pick — that's what `calcPodiumPts` scores.
 - **Scoring lives in `calcPts` / `calcPodiumPts` / `calcPodiumSlotPts` in `index.html`.** Single source of truth — do not duplicate; `badgeColor` thresholds are calibrated to this scale.
+- **Ranking/ordering is ONE authority: `compareStandings` (display order) + `sameRank` (rank number, medal, dinner side).** Every rank-semantic surface — the leaderboard, the possible-rank range, Contas, the chart dinner bands — must go through them; `contasCmp` is `sameRank`'s strict prefix by design. Rank keys are `total → correct champion (2-way) → group points`; everything below (champion alive-vs-dead, podium exposure, exacts, alphabetical) is **display-only and must never move a position**. See `specifications/_archive/one-rank-authority-canonical-tiebreak-ladder.md`. Do not reintroduce a divergent comparator (that bug cost two prior rounds of fixes).
 - **Score-display invariant:** `m.score_a !== null` means "show this score"; `isFinal(m)` means "match is over — lock bracket/elimination logic on it".
 - **PIN verification is server-side** in Edge Functions; anon key never sees PINs. RLS on prediction tables is gated on `tournament_config.submission_deadline` — direct anon reads return empty pre-deadline.
 
