@@ -5,6 +5,8 @@
 
 The Euro is *not* a smaller World Cup. Three things genuinely differ: **6 groups not 12**, **a Round of 16 entry (no R32)**, and — the one that isn't mechanical — **no third-place match**.
 
+> **References are by symbol, not line number.** `index.html` opens with a `TOURNAMENT CONFIG` fork manifest naming every variant symbol below; search the file for the name.
+
 ---
 
 ## ⚠️ Decide this FIRST: what is a "podium" without a bronze match?
@@ -22,7 +24,7 @@ The rest of this runbook flags `[Option A]` / `[Option B]` where the path forks.
 
 You are forking a thin costume, not rebuilding. Untouched:
 - Players, PINs, server-side PIN verification, observers, reveal gates, audit export.
-- Golf scoring scale + `badgeColor` (`index.html:221`), the leaderboard, tie-break ladder, dinner split, position arrows, fun-facts.
+- Golf scoring scale + `badgeColor`, the leaderboard, the tie-break ladder (`compareStandings` / `sameRank` — see `specifications/_archive/one-rank-authority-canonical-tiebreak-ladder.md`), dinner split, position arrows, fun-facts.
 - The live-results mechanism (`poll-results`, pairing on `fd_match_id`) — only the competition code changes.
 - All five Edge Functions, the `tournament_config` table, the seed-script *structure* (`seed-matches.js`, `seed-fd-ids.js`, `seed-knockout.js`).
 - The slot-resolution trick: resolve each KO row to its bracket slot via the group winner/runner-up side (trivial from standings), third falls out — **no best-thirds JS**, exactly as in the WC fork. It ports as-is to the Euro R16.
@@ -32,30 +34,33 @@ You are forking a thin costume, not rebuilding. Untouched:
 ## The structural rewrites (the fork cost)
 
 ### 1. Group count & size
-- `groupMatches.length >= 72` → **`>= 36`** in **both** spots (`index.html:917` and `:1569`).
-- Group letters become **A–F**. The `group_letter.length === 1` KO/group discriminator still holds (A–F are single chars), so no change there.
+- `GROUP_MATCH_COUNT` → **`36`**. It's a single named constant in the fork manifest now — one edit, no longer two scattered spots.
+- Group letters become **A–F**. `isGroupMatch` tests `group_letter` against `/^[A-L]$/`, which already matches A–F and rejects the KO stage codes, so the discriminator holds unchanged (narrow the range to `/^[A-F]$/` only if you want to be strict).
 - 6 groups × 4 teams = 24; 36 group matches.
 
-### 2. The bracket tree (`index.html:832-877`)
+### 2. The bracket tree (the `R32` / `R16` / `QF` / `SF` arrays + `BRACKET_STRUCTURE`)
 - **Delete the `R32` array.** The Euro's first KO round is the **Round of 16** (8 matches): 6 group winners + 6 runners-up + 4 best third-placed.
 - **Rewrite `R16`** as the entry round, with UEFA's group-position placeholders (`{type:'winner'|'runnerup'|'third', group/groups}`) per the official Euro bracket + the best-4-thirds combination table.
 - **Re-chain** `QF` ← R16, `SF` ← QF, `final` ← SF (the 4-quarter / 2-half shape is intact; it just feeds from R16).
-- **Remove the `3P` entry** from `BRACKET_STRUCTURE` (`index.html:875`). `[Option B]`: keep a notion of "SF losers" but render no bronze fixture.
+- **Remove the `3P` entry** from `BRACKET_STRUCTURE`. `[Option B]`: keep a notion of "SF losers" but render no bronze fixture.
 
-### 3. `computeActualTournamentState` (`index.html:911`)
-- **Rule 1 guard:** `r32.length >= 16` → the **R16** round, `>= 8` (`index.html:923-924`). Non-qualifiers still derive from the seeded first KO round — same trick, new round.
-- **KO-loser loop** (`['R32','R16','QF']`, `index.html:934`): drop `R32`; `[Option A]` → `['R16','QF','SF']` (SF losers ARE eliminated — no bronze to play for); `[Option B]` → `['R16','QF']` (SF losers stay alive as joint-3rd).
-- **Delete the `3P` block** (`index.html:942-946`). `[Option A]`: remove `third` from the returned state and from `actual = [champion, runnerUp, third]` in `calcPodiumSlotPts` (`index.html:253`).
-- **Final** block unchanged (`index.html:949`): champion / runner-up.
+Note: several `R32.length` references (e.g. the "R32 fully seeded" guards) key off the *deleted* array — re-point them to `R16.length` (see step 3).
+
+### 3. `computeActualTournamentState`
+- **Rule 1 guard:** `r32.length >= R32.length` → the **R16** round, `r16.length >= R16.length` (8). Non-qualifiers still derive from the seeded first KO round — same trick, new round.
+- **KO-loser loop** (`['R32','R16','QF']`): drop `R32`; `[Option A]` → `['R16','QF','SF']` (SF losers ARE eliminated — no bronze to play for); `[Option B]` → `['R16','QF']` (SF losers stay alive as joint-3rd).
+- **Delete the `3P` block.** `[Option A]`: remove `third` from the returned state and from `actual = [champion, runnerUp, third]` in `calcPodiumSlotPts`.
+- **Final** block unchanged: champion / runner-up.
 
 ### 4. Podium scoring & UX
-- `calcPodiumPts` loops `for (i=0; i<3; i++)` (`index.html:267`) → `[Option A]` make it 2 slots (`i<2` or `podiumArr.length`); `[Option B]` keep 3.
-- `[Option A]` Bracket draft, podium card, expanded-row dots (`index.html:~1888`), and bar-chart slot datasets (`slotDataset`, `index.html:516-548` — three datasets 🥇🥈🥉) all drop to two slots.
+- `calcPodiumPts` loops `for (i=0; i<3; i++)` → `[Option A]` make it 2 slots (`i<2` or `podiumArr.length`); `[Option B]` keep 3.
+- `[Option A]` Bracket draft, podium card, expanded-row dots, and the bar-chart slot datasets (`slotDataset` in `buildPodiumBarChart` — three datasets 🥇🥈🥉) all drop to two slots.
+- `[Option A]` The ranking layer reads only the champion slot (`calcPodiumSlotPts(0, …)` via `correctChamp` / `champDeadness`), so it survives a 2-slot podium untouched — no tie-break change needed.
 
-### 5. Structural-podium-floor (`specifications/structural-podium-floor.md`)
+### 5. Structural-podium-floor (`specifications/_archive/structural-podium-floor.md`)
 The geometry generalizes; the parameters change:
 - `[Option A]`: floor region = **half** (not quarter). Recompute the region sets from the new R16 tree; the rule becomes "two podium picks in the same half → ≥20." `buildTeamQuarter` becomes `buildTeamHalf`; `podiumFloor` is otherwise identical (`Σ 20×max(0, aliveInRegion−1)`).
-- `[Option B]`: floor stays quarter-based; just recompute `QUARTERS` from the R16 tree (each quarter = the R16 matches feeding one QF). The pill/segment logic is unchanged.
+- `[Option B]`: floor stays quarter-based; just recompute `PODIUM_QUARTERS` from the R16 tree (each quarter = the R16 matches feeding one QF). The pill/segment logic is unchanged.
 This spec is unbuilt at fork time — port whichever variant matches the decision.
 
 ### 6. Feed competition code
@@ -66,7 +71,7 @@ Full European roster, football-data-English → Portuguese. Many WC entries are 
 
 ### 8. Schedule + timezone (`seed-matches.js`)
 - Rebuild `MATCHES`: 36 group fixtures, groups A–F, venues.
-- **Host timezone — happily a no-op for 2028:** UK & Ireland run on BST (UTC+1), the same offset as 2026's WEST, so `GAME_DAY_ROLLOVER_UTC_HOUR = 8` (`index.html:970`) stays correct and the June/July `pg_cron` gate is unchanged. Re-check this for any later Euro with a different host.
+- **Host timezone — happily a no-op for 2028:** UK & Ireland run on BST (UTC+1), the same offset as 2026's WEST, so `GAME_DAY_ROLLOVER_UTC_HOUR = 8` stays correct and the June/July `pg_cron` gate is unchanged. Re-check this for any later Euro with a different host.
 
 ### 9. Copy / branding
 Replace `WC2026` / World-Cup strings with the Euro edition; group selectors reflect A–F.
