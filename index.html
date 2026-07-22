@@ -546,7 +546,26 @@ let chartInstances = { main: null, bar: null };
 // renderLeaderboard and read by buildPodiumBarChart (avoids re-deriving standings).
 let podiumBarData = null;
 
-const PLAYER_COLORS = ["#34d399","#06b6d4","#f59e0b","#f472b6","#a78bfa","#fb923c","#60a5fa","#e2e8f0"];
+// 15 maximally-distinct line colours — brand emerald + gold lead, then a categorical spread. All
+// legible on the dark bg (none near-white), and none is the dinner-band red (#ef4444). Assigned by
+// leaderboard order, so the players plotted together (top of the board) get the most separated hues.
+const PLAYER_COLORS = [
+  "#34d399", // emerald (brand)
+  "#f59e0b", // amber (brand gold)
+  "#60a5fa", // blue
+  "#f472b6", // pink
+  "#a3e635", // lime
+  "#a78bfa", // violet
+  "#22d3ee", // cyan
+  "#fb7185", // rose
+  "#fbbf24", // yellow
+  "#38bdf8", // sky
+  "#e879f9", // fuchsia
+  "#4ade80", // green
+  "#fca5a5", // salmon
+  "#818cf8", // indigo
+  "#2dd4bf", // teal
+];
 
 function buildChart(canvasId, players, instanceKey) {
   const canvas = document.getElementById(canvasId);
@@ -554,13 +573,24 @@ function buildChart(canvasId, players, instanceKey) {
   if (chartInstances[instanceKey]) { chartInstances[instanceKey].destroy(); chartInstances[instanceKey] = null; }
   if (players.length === 0) return;
 
-  // Group matches only — the line chart is the group-stage record. Once knockout rows get
-  // scored they'd otherwise add a meaningless flat tail (no KO score-predictions in v0).
+  // Group matches drive the per-day line; once the group stage completes we append ONE final
+  // "Pódio" column where each line jumps by that player's podium points, so the chart ends at the
+  // real final total (group + podium) — the same number the leaderboard shows.
   const played = state.matches
     .filter(m => m.score_a !== null && isGroupMatch(m))
     .sort((a, b) => new Date(a.kickoff) - new Date(b.kickoff));
 
   const dates = [...new Set(played.map(m => m.kickoff.split("T")[0]))].sort();
+
+  const ts = computeActualTournamentState();
+  const showPodium = ts.groupStageComplete;
+  const podiumOf = p => {
+    const pod = state.allPodiums[p.id];
+    const pts = calcPodiumPts(pod ? [pod.first_place, pod.second_place, pod.third_place] : ["","",""], ts);
+    return pts == null ? 0 : pts;
+  };
+  const labels = dates.map(d => { const [,m,day] = d.split("-"); return `${day}/${m}`; });
+  if (showPodium) labels.push("Pódio");
 
   const datasets = players.map((p, i) => {
     let cumulative = 0;
@@ -571,11 +601,13 @@ function buildChart(canvasId, players, instanceKey) {
       });
       return cumulative;
     });
+    if (showPodium) data.push(cumulative + podiumOf(p));   // final total = group + podium
+    const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
     return {
       label: playerLabel(p, true),
       data,
-      borderColor: PLAYER_COLORS[i % PLAYER_COLORS.length],
-      backgroundColor: "transparent",
+      borderColor: color,
+      backgroundColor: color,     // fills the point-style legend marker in the line colour (no box)
       borderWidth: 2,
       borderDash: p.is_observer ? [5, 4] : undefined,
       pointRadius: 3,
@@ -583,14 +615,14 @@ function buildChart(canvasId, players, instanceKey) {
     };
   });
 
-  // Dinner-cutoff band: shade from rank T+1 (first to pay) upward, per day,
-  // among non-observers only (see leaderboard-chart-unified-and-cutoff-band.md)
+  // Dinner-cutoff band: the T-th value per column among non-observers (the pay line). At the Pódio
+  // column the values are the true totals, so the band lands on the final dinner cutoff.
   const compSeries = datasets.filter((_, i) => !players[i].is_observer).map(d => d.data);
   const N = compSeries.length;
   const T = Math.floor(N / 2);
   if (N >= 2) {
-    const cutoff = dates.map((_, day) => {
-      const vals = compSeries.map(s => s[day]).sort((a, b) => a - b);
+    const cutoff = labels.map((_, col) => {
+      const vals = compSeries.map(s => s[col]).sort((a, b) => a - b);
       return vals[T];
     });
     datasets.push({
@@ -604,23 +636,25 @@ function buildChart(canvasId, players, instanceKey) {
     });
   }
 
+  // "Recentes" (default) zooms the x-axis to the last 5 points; "Tudo" shows the whole arc.
+  const xMin = (!state.lineChartAll && labels.length > 5) ? labels.length - 5 : undefined;
+
   chartInstances[instanceKey] = new Chart(canvas, {
     type: "line",
-    data: {
-      labels: dates.map(d => { const [,m,day] = d.split("-"); return `${day}/${m}`; }),
-      datasets
-    },
+    data: { labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: {
-          labels: { color: "rgba(255,255,255,0.6)", font: { size: 11, family: "'Manrope', sans-serif" }, boxWidth: 12, padding: 10, filter: item => item.text !== "__cutoff__" }
+          // point-style markers (a short line in the player's colour) instead of filled boxes
+          labels: { usePointStyle: true, pointStyle: "line", color: "rgba(255,255,255,0.6)", font: { size: 11, family: "'Manrope', sans-serif" }, padding: 10, filter: item => item.text !== "__cutoff__" }
         },
         tooltip: { mode: "index", intersect: false }
       },
       scales: {
         x: {
+          min: xMin,
           ticks: { color: "rgba(255,255,255,0.4)", font: { size: 10 } },
           grid: { color: "rgba(255,255,255,0.04)" }
         },
@@ -686,9 +720,12 @@ function buildPodiumBarChart(canvasId, instanceKey) {
   ];
   const floorIdx = datasets.length - 1;
 
-  // Y-axis floor just below the leader (not 0) so differences and leaps read clearly.
-  const minTotal = Math.min(...players.map(p => p.total));
-  const yMin = Math.max(0, minTotal - 10);
+  // Y-axis floor just below the lowest GROUP base (not the lowest total) so that every stacked
+  // podium segment — and its flag datalabel — stays above the axis. Flooring on the min total
+  // clipped the axis through the lower podium segments of the group-stage leaders, dropping their
+  // flags below the x-axis.
+  const minGroupTotal = Math.min(...players.map(groupTotalOf));
+  const yMin = Math.max(0, minGroupTotal - 6);
 
   // Dinner-cutoff band: shade the board's ACTUAL paying set, not a raw median total, so the band
   // can never contradict the leaderboard's dinner split (classifyBoard applies the cutoff-tie
@@ -757,7 +794,7 @@ function initCharts() {
 // ─── STATE ───────────────────────────────────────────────────────────
 let state = {
   view: "matches", players: [], matches: [], allPreds: {}, allPodiums: {},
-  currentPlayer: null, selectedMatch: null, groupFilter: "all", groupFilterTouched: false, statusFilter: "all", viewTouched: false,
+  currentPlayer: null, selectedMatch: null, groupFilter: "all", groupFilterTouched: false, statusFilter: "all", viewTouched: false, lineChartAll: false,
   editPreds: {}, editPodium: ["","",""], submitted: false, submitting: false,
   expanded: {}, resumoOpen: false, dropdownOpen: false, loading: true, error: null,
   lockDeadline: null, lockPassed: false, revealAt: null, revealPassed: false, actualPodium: null,
@@ -2112,6 +2149,11 @@ function renderMatches() {
     .flat();
   const koShown = state.matches
     .filter(m => koVisibleStages.includes(m.group_letter))
+    .filter(m => {   // honour the Jogados / Por jogar filter here too (was applied only to group games)
+      if (state.statusFilter === "played" && m.score_a === null) return false;
+      if (state.statusFilter === "upcoming" && m.score_a !== null) return false;
+      return true;
+    })
     .sort((a, b) => koMs(a) - koMs(b));
   const koAnchorId = (koShown.find(isLive) || koShown.find(m => m.score_a === null))?.id;
 
@@ -2175,7 +2217,9 @@ function renderMatches() {
 
   // Fase Final view — read-only KO results grouped by stage (cards non-clickable: no predictions).
   const koNodes = koShown.length === 0
-    ? [ h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: "12px", padding: "30px 0" } }, "A fase final começa em breve.") ]
+    ? [ state.statusFilter === "all"
+        ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: "12px", padding: "30px 0" } }, "A fase final começa em breve.")
+        : emptyNode ]
     : koVisibleStages.map(stage => {
         const ms = koShown.filter(m => m.group_letter === stage);
         if (ms.length === 0) return null;
@@ -2454,6 +2498,10 @@ function renderLeaderboard() {
     h("div", { style: { fontSize: "11px", fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "6px" } }, "Pontos Acumulados"),
     N >= 2 ? h("div", { style: { fontSize: "10px", color: "rgba(255,255,255,0.4)", marginBottom: "10px" } },
       "🔴 zona que paga o jantar — abaixo da zona vermelha estás a salvo (observadores 👀 não contam)"
+    ) : null,
+    played.length >= 2 ? h("div", { style: { display: "flex", gap: "6px", marginBottom: "8px" } },
+      h("button", { className: `filter-btn ${!state.lineChartAll ? "active" : ""}`, style: { padding: "3px 12px", fontSize: "10px" }, onClick: () => setState({ lineChartAll: false }) }, "Recentes"),
+      h("button", { className: `filter-btn ${state.lineChartAll ? "active" : ""}`, style: { padding: "3px 12px", fontSize: "10px" }, onClick: () => setState({ lineChartAll: true }) }, "Tudo")
     ) : null,
     played.length < 2
       ? h("div", { style: { textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: "12px", padding: "20px 0" } }, "Disponível após os primeiros jogos")
