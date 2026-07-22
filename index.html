@@ -163,6 +163,23 @@
 const SUPABASE_URL = "https://thjvoocszfzqkyatkevv.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoanZvb2NzemZ6cWt5YXRrZXZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MjUxNjgsImV4cCI6MjA5MTMwMTE2OH0.ZcddMnsMF9cejXx3zuWNVqd4F8bMxgdIRHLSJsC7aUs";
 
+// ─── TOURNAMENT CONFIG (fork manifest) ───────────────────────────────
+// Everything that is edition- or format-specific lives at the symbols named below. To stand up a
+// new edition, edit ONLY these — the scoring/bracket/ranking engines are format-invariant. See the
+// step-by-step runbooks in porting/ (WC-reseed-runbook.md for another World Cup, EURO-fork-runbook.md
+// for a Euro). Symbols, not line numbers, so this manifest can't go stale:
+//
+//   • GROUP_MATCH_COUNT   — group-stage match count (below). Also implies the group letters (A–L).
+//   • FLAGS               — team → flag emoji map (participating nations).
+//   • R32 / R16 / QF / SF / BRACKET_STRUCTURE — the static knockout tree (FIFA 48-team format).
+//   • PODIUM_QUARTERS     — R32-slot → bracket-quarter map (structural-podium-floor geometry).
+//   • THIRD_SLOT_GROUPS   — which groups' 3rd-placed teams can fill each R32 "best 3rd" slot.
+//   • isGroupMatch        — the A–L vs knockout-stage-code discriminator (group_letter shape).
+//
+// FIFA-format invariants (do NOT touch for another World Cup — only for a Euro fork): the bracket
+// tree, PODIUM_QUARTERS, THIRD_SLOT_GROUPS, GROUP_MATCH_COUNT (72), and the 16-slot R32 (= R32.length).
+const GROUP_MATCH_COUNT = 72;   // 12 groups × 6 matches; the "group stage complete" threshold
+
 async function sbGet(table, params = "") {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
     headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
@@ -975,14 +992,14 @@ function computeActualTournamentState(asOf = Infinity) {
   let champion = null, runnerUp = null, third = null;
 
   const groupMatches = state.matches.filter(m => isGroupMatch(m) && inWindow(m));
-  const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => isFinal(m));
+  const groupStageComplete = groupMatches.length >= GROUP_MATCH_COUNT && groupMatches.every(m => isFinal(m));
   if (!groupStageComplete) return { champion, runnerUp, third, eliminated, groupStageComplete: false };
 
   // Rule 1 — group non-qualifiers. The seeded R32 is the factual record of who advanced;
   // any group-stage team absent from it is out. Guarded on a full R32 (16 matches) so a
   // partial seed never flags a real qualifier. (Beats re-deriving FIFA's best-8-thirds in JS.)
   const r32 = state.matches.filter(m => m.group_letter === 'R32' && inWindow(m));
-  if (r32.length >= 16) {
+  if (r32.length >= R32.length) {
     const qualified = new Set();
     r32.forEach(m => { if (m.team_a) qualified.add(m.team_a); if (m.team_b) qualified.add(m.team_b); });
     const groupTeams = new Set();
@@ -1053,7 +1070,7 @@ function slotQuarter(slot) { return PODIUM_QUARTERS.findIndex(q => q.includes(sl
 // Returns null until the R32 is fully seeded and every row is pinned.
 function r32RowsBySlot() {
   const r32Rows = state.matches.filter(m => m.group_letter === 'R32');
-  if (r32Rows.length < 16) return null;                     // partial seed → dormant
+  if (r32Rows.length < R32.length) return null;             // partial seed → dormant
   const standings = computeStandings(state.matches, m => ({ sa: m.score_a, sb: m.score_b }));
   const resolve = ph => {
     if (ph.type === 'third') return null;                   // third is a wildcard, resolved below
@@ -1228,7 +1245,7 @@ function buildKoEngine() {
   if (!bySlot) return null;                                 // R32 not fully seeded → dormant
   // Unlike buildTeamQuarter, the engine needs the WHOLE tree: every slot pinned, both teams
   // known — otherwise participant propagation would crash or enumerate a fictional bracket.
-  for (let s = 0; s < 16; s++) {
+  for (let s = 0; s < R32.length; s++) {
     const m = bySlot[s];
     if (!m || !m.team_a || !m.team_b) return null;
   }
@@ -2057,7 +2074,7 @@ function renderMatches() {
   const groupLetters = state.matches.filter(isGroupMatch).map(m => m.group_letter);
   const groups = [...new Set(groupLetters)].sort();
   const groupMatches = state.matches.filter(isGroupMatch);
-  const groupStageComplete = groupMatches.length >= 72 && groupMatches.every(m => isFinal(m));
+  const groupStageComplete = groupMatches.length >= GROUP_MATCH_COUNT && groupMatches.every(m => isFinal(m));
   const myPreds = state.allPreds[state.currentPlayer?.id] || {};
 
   // Once the group stage ends, "Fase Final" becomes the default — until the user picks a filter.
