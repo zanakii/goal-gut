@@ -36,3 +36,7 @@ pids/
 
 # Ad-hoc analytics reports (game-analyst scoring analysis, etc.)
 scoring-analysis-report*.html
+
+# Local tournament archives (export-archive.js output) — kept off the public repo
+# by choice, not by necessity: the dump excludes PINs. Copy it somewhere durable.
+backups/
