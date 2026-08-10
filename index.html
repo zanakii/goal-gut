@@ -178,6 +178,10 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 // Group-stage match count — 12 groups × 6 = 72; the "group stage complete" threshold. Implies A–L.
 const GROUP_MATCH_COUNT = 72;
 
+// Display name of this edition. Used by the archive banner once the Final is played; keep it in
+// sync with the <title>. Purely cosmetic — no logic reads it.
+const EDITION_NAME = "Mundial 2026";
+
 // Team → flag emoji (participating nations). flagOf / teamWithFlag helpers live in the FLAGS section.
 const FLAGS = {
   'Brasil':'🇧🇷','Argentina':'🇦🇷','Colômbia':'🇨🇴','Uruguai':'🇺🇾','Equador':'🇪🇨',
@@ -349,6 +353,15 @@ function tournamentStarted() {
   return state.matches.some(m =>
     new Date(m.kickoff).getTime() <= now || m.score_a !== null || isLive(m) || isFinal(m)
   );
+}
+
+// The tournament is over once the Final is played. Derived from match data (never a config
+// flag) so it needs no manual switch and ports for free — every edition ends on a 'FIN' row.
+// Gates the ARCHIVE MODE: every surface whose meaning is "since last time" or "still to come"
+// (position arrows, Resumo, Contas, the progress bar) goes quiet, because a dormant board that
+// still shows ▲2 and "what must happen" reads as live. See renderLeaderboard.
+function tournamentConcluded() {
+  return state.matches.some(m => m.group_letter === 'FIN' && isFinal(m));
 }
 
 function matchWinner(m) {
@@ -2323,10 +2336,35 @@ function renderMatchDetail() {
   );
 }
 
+// The archive-mode epitaph, shown where the progress bar sits during the tournament. Every value
+// is derived — champion from the resolved bracket, winner and payers from the final board — so it
+// needs no seeding and stays correct for whatever edition runs next. Ties are handled: rank 1 can
+// be shared, and the paying half can be wider than half when a tie straddles the line
+// (classifyBoard neutralises those rows, which is why we filter on dinnerHalf, not on index).
+function conclusionCard(ts, mainLb) {
+  const winners = mainLb.filter(p => p.rank === 1);
+  const payers = mainLb.filter(p => p.dinnerHalf === "bottom");
+  const line = (emoji, label, value) => h("div", { style: { display: "flex", alignItems: "baseline", gap: "8px", fontSize: "13px", marginTop: "7px" } },
+    h("span", { style: { fontSize: "13px" } }, emoji),
+    h("span", { style: { color: "rgba(255,255,255,0.45)", minWidth: "62px" } }, label),
+    h("span", { style: { color: "rgba(255,255,255,0.9)", fontWeight: 700 } }, value)
+  );
+  return h("div", { className: "progress-card" },
+    h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
+      h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.5)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" } }, EDITION_NAME),
+      h("span", { style: { fontSize: "10px", fontWeight: 800, color: "var(--gold)", background: "rgba(233,185,73,0.14)", borderRadius: "999px", padding: "2px 9px", letterSpacing: "0.4px" } }, "TERMINADO")
+    ),
+    ts.champion ? line("🏆", "Campeã", teamWithFlag(ts.champion)) : null,
+    winners.length > 0 ? line("🥇", winners.length > 1 ? "Vencedores" : "Vencedor", winners.map(p => playerLabel(p)).join(" · ")) : null,
+    payers.length > 0 ? line("🍽️", "Jantar", `pago por ${payers.map(p => playerLabel(p, true)).join(", ")}`) : null
+  );
+}
+
 function renderLeaderboard() {
   const played = state.matches.filter(m => m.score_a !== null);
   const progress = state.matches.length > 0 ? (played.length / state.matches.length) * 100 : 0;
   const tournamentState = computeActualTournamentState();
+  const concluded = tournamentConcluded(); // archive mode — see tournamentConcluded()
   const teamQuarter = buildTeamQuarter(); // {} until R32 fully seeded → floor inert
   const sf = sfOutcome(); // SF winners (guaranteed finalists) / losers (3rd at best) → floor drivers
   const lb = state.players.map(p => {
@@ -2356,7 +2394,10 @@ function renderLeaderboard() {
   // specifications/knockout-objective-conditions.md). One shared enumeration; per-row
   // distillation happens lazily inside playerConditions for expanded rows only. Also carries
   // the EXACT possible-rank range (rankRange), used just below.
-  const contas = (tournamentState.groupStageComplete && N >= 2) ? contasData(mainLb) : null;
+  // Archive mode skips the enumeration entirely: with the podium played out there is nothing
+  // left to condition on, and `podiumDecided` below pins bestRank/worstRank to the final rank
+  // without ever consulting `rankRange`.
+  const contas = (tournamentState.groupStageComplete && N >= 2 && !concluded) ? contasData(mainLb) : null;
   const rankRange = contas?.rankRange;
   const podiumDecided = tournamentState.champion && tournamentState.runnerUp && tournamentState.third;
 
@@ -2392,7 +2433,10 @@ function renderLeaderboard() {
 
   // Game-day position changes + fun facts (see leaderboard-position-changes-and-fun-facts.md).
   // Frozen to the last completed game day (09:00 Lisbon rollover); shared across viewers.
-  const gd = lastCompletedGameDay(Date.now());
+  // Both are "what changed since the last game day" — meaningless once the tournament is over,
+  // and actively misleading: a green ▲2 next to a permanent standing reads as this morning.
+  // Leaving the map empty makes every arrow null and drops the Resumo card downstream.
+  const gd = concluded ? null : lastCompletedGameDay(Date.now());
   const deltaById = new Map();
   let gameFacts = [];
   if (gd) {
@@ -2537,7 +2581,9 @@ function renderLeaderboard() {
   ) : null;
 
   return h("div", { className: "content" },
-    h("div", { className: "progress-card" },
+    // Archive mode swaps the (permanently full) progress bar for the epitaph: how it ended.
+    // A visitor two years from now should learn the outcome from the top of the page.
+    concluded ? conclusionCard(tournamentState, mainLb) : h("div", { className: "progress-card" },
       h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: "8px" } },
         h("span", { style: { fontSize: "12px", color: "rgba(255,255,255,0.5)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" } }, "Progresso do Torneio"),
         h("span", { style: { fontSize: "13px", color: "var(--gold)", fontWeight: 700 } }, `${played.length}/${state.matches.length} jogos`)
