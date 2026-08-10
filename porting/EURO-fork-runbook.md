@@ -31,6 +31,26 @@ You are forking a thin costume, not rebuilding. Untouched:
 
 ---
 
+## Step 0 (before any config edit): make that list above *provable*
+
+Everything in "What stays unchanged" is, as written, a **claim in a markdown file**. Nothing in the code enforces it. If some supposedly format-invariant function quietly reads a World Cup constant, you find out in June, in front of everyone.
+
+Make it checkable first — one afternoon, before you touch a single config value:
+
+1. **Save WC2026 as a replay dataset.** Dump the finished tournament to JSON — `matches` (results + status), `predictions`, `podium_predictions`, `bracket_predictions`, `players`. Column-whitelist it: **this repo is public, so PIN hashes must not go in** (names and predictions are already public at goalgut.gg, so those cost nothing). `db-snapshot.js` has the read-only connection pattern to copy; write a sibling script, don't modify it.
+
+2. **Make `TOURNAMENT CONFIG` injectable.** Today the engine reads `GROUP_MATCH_COUNT`, the bracket tree, `PODIUM_QUARTERS` etc. as module-level constants. Change the engine's entry points to take a config object instead. **This is the actual deliverable** — the test is just what proves it worked. Once config is a parameter, the WC test can hand in a frozen WC config while the live app hands in the Euro's, and any "engine" function still reaching for a global constant fails loudly and immediately. That failure list *is* your true engine/costume boundary, replacing the one this document currently asserts on trust.
+
+3. **Assert the known-good outcome.** Replay WC2026 and check the real final board: Pedro Miguel 248 (1st), José Maria 256, Miguel 258, six payers of eleven, Espanha champion, per-player exact counts. Use `node:test` — built in; this repo has two dependencies and should keep it that way. No production change is needed to run it: the engine functions read a global `state`, so the harness can eval the script block out of `index.html` in a `node:vm` context and set `state` itself.
+
+4. **Add mid-tournament cut points.** The final board only exercises the *end* of the engine. `podiumFloor`, `contasData`/`rankRange`, `minPodiumGap` and the game-day deltas are only meaningful mid-tournament — the subtlest code in the file, and the code a single end-state replay never touches. Chop the same dataset at the group-stage end, after QF, after SF, and assert at each. Nearly free; it's the same data filtered by date.
+
+Then fork. From here on, every change you make gets an instant verdict: **WC2026 still scores 248 → you edited costume. It doesn't → you edited engine.** Re-pinning the numbers because the Euro genuinely changes a rule is fine and expected (podium arity under Option A, for one) — doing it *without noticing* is the failure this prevents.
+
+Skipping Step 0 is defensible if you're in a hurry. Just know that you're then porting on the strength of a paragraph someone wrote in 2026.
+
+---
+
 ## The structural rewrites (the fork cost)
 
 ### 1. Group count & size
